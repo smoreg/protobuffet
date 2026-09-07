@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -44,6 +45,11 @@ func Artifact(a registry.Artifact, body []byte) error {
 // <module>@<version>/, and a go.mod whose module directive matches. Without
 // this, `go get` fails after download with a confusing mismatch error.
 func GoModuleZip(body []byte, modPath, version string) error {
+	if major := registry.MajorOf(version); major != "v0" && major != "v1" &&
+		!strings.HasSuffix(modPath, "/"+major) {
+		return fmt.Errorf("go module zip: %s publishes %s but does not end in /%s; "+
+			"Go requires the major version in the import path from v2 on", modPath, version, major)
+	}
 	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 	if err != nil {
 		return fmt.Errorf("go module zip: %w", err)
@@ -159,13 +165,13 @@ func NPMTarball(body []byte, name, version string) error {
 	if err != nil {
 		return fmt.Errorf("npm tarball: %w", err)
 	}
-	defer gz.Close()
+	defer gz.Close() //nolint:errcheck // read-only reader
 
 	tr := tar.NewReader(gz)
 	var manifest []byte
 	for {
 		h, err := tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

@@ -152,7 +152,7 @@ func requiresPython(a registry.Artifact) string {
 
 func writeHTML(w http.ResponseWriter, body string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(body))
+	w.Write([]byte(body)) //nolint:errcheck // a failed write means the client is gone
 }
 
 func baseURL(configured string, r *http.Request) string {

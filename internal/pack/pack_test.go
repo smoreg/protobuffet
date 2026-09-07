@@ -176,3 +176,74 @@ func TestWheelLayout(t *testing.T) {
 		t.Errorf("NormalizePythonName = %q", n)
 	}
 }
+
+func TestExtractZipRoundTrip(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"buf.yaml":                   "version: v2\n",
+		"proto/catalog/v1/api.proto": "syntax = \"proto3\";\n",
+	})
+	body, err := Zip(dir, "", SkipHidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	if err := ExtractZip(body, out, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(out, "proto/catalog/v1/api.proto"))
+	if err != nil || string(got) != "syntax = \"proto3\";\n" {
+		t.Fatalf("extracted content = %q, %v", got, err)
+	}
+
+	// A prefixed archive, as produced for Composer, with the prefix stripped.
+	prefixed, err := Zip(dir, "acme-catalog-1.0.0", SkipHidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stripped := t.TempDir()
+	if err := ExtractZip(prefixed, stripped, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(stripped, "buf.yaml")); err != nil {
+		t.Errorf("strip did not remove the prefix: %v", err)
+	}
+}
+
+func TestFilesFiltering(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"keep.proto":              "x",
+		".git/config":             "x",
+		"vendor/dep/file.go":      "x",
+		"node_modules/pkg/i.js":   "x",
+		"sub/.hidden/thing.proto": "x",
+		"sub/keep.proto":          "x",
+	})
+	files, err := Files(dir, SkipHidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"keep.proto", "sub/keep.proto"}
+	if len(files) != len(want) {
+		t.Fatalf("files = %v, want %v", files, want)
+	}
+	for i := range want {
+		if files[i] != want[i] {
+			t.Errorf("files[%d] = %q, want %q", i, files[i], want[i])
+		}
+	}
+	// An empty selection is an error: publishing an empty artifact is never
+	// what the caller meant.
+	if _, err := Zip(t.TempDir(), "", SkipHidden); err == nil {
+		t.Error("packing an empty directory succeeded")
+	}
+}
+
+func TestWheelRequiresNameAndVersion(t *testing.T) {
+	dir := writeTree(t, map[string]string{"x.py": "# x\n"})
+	if _, err := Wheel(dir, WheelMeta{Version: "1.0.0"}, SkipHidden); err == nil {
+		t.Error("wheel without a name accepted")
+	}
+	if _, err := Wheel(dir, WheelMeta{Name: "x"}, SkipHidden); err == nil {
+		t.Error("wheel without a version accepted")
+	}
+}

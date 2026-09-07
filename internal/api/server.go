@@ -76,8 +76,11 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /api/v1/modules/{owner}/{name}/labels/{label}", write(s.setLabel))
 
 	s.mux.Handle("GET /m/{owner}/{name}", read(http.HandlerFunc(s.uiModule)))
-	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok\n"))
+	// Go module paths live under this prefix by convention; discovery for
+	// them, and for any other path, is handled by the catch-all below.
+	s.mux.Handle("GET /gen/", read(http.HandlerFunc(s.ui)))
+	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("ok\n")) //nolint:errcheck // a failed write means the client is gone
 	})
 	s.mux.Handle("GET /", read(http.HandlerFunc(s.ui)))
 }
@@ -90,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		// Responses carry file contents under a declared content type; tell
+		// browsers not to second-guess it.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		s.log.Info("request",
@@ -224,7 +230,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid multipart body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	defer r.MultipartForm.RemoveAll()
+	defer r.MultipartForm.RemoveAll() //nolint:errcheck // temp files are cleaned by the OS if this fails
 
 	var man PublishManifest
 	if err := json.Unmarshal([]byte(r.FormValue("manifest")), &man); err != nil {
@@ -356,7 +362,11 @@ func (s *Server) checkBreaking(ctx context.Context, m registry.Module, version s
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			s.log.Warn("clean up breaking-check workspace", "dir", dir, "err", err)
+		}
+	}()
 
 	newPath := filepath.Join(dir, "new.zip")
 	oldPath := filepath.Join(dir, "old.zip")
@@ -414,7 +424,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	enc.Encode(v)
+	enc.Encode(v) //nolint:errcheck // a failed write means the client is gone
 }
 
 func httpError(w http.ResponseWriter, err error) {

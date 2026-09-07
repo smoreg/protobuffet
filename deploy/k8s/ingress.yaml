@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: protobuffet
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # Publishes carry the generated SDKs; the default 1m limit truncates them.
+    nginx.ingress.kubernetes.io/proxy-body-size: 256m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [schemas.example.com]
+      secretName: protobuffet-tls
+  rules:
+    # This hostname is part of the contract: Go module paths start with it,
+    # and it must resolve on port 443, because a module path cannot carry a
+    # port. Changing it later invalidates every published Go module path.
+    - host: schemas.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: protobuffet
+                port: {name: http}

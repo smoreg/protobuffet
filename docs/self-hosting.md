@@ -38,7 +38,21 @@ reading needs no token at all, which is what makes `go get` work without
 configuring credentials on every developer machine.
 
 For a private registry set `public_read: false` and give consumers a `read`
-token. The Go toolchain sends credentials from `~/.netrc`:
+token. ### The go command and 401
+
+The go command falls through to the next entry in `GOPROXY` only on 404 and
+410. A private registry answering 401 stops resolution for *every* module in
+the build, including public ones. Two ways out:
+
+```sh
+# put the registry last, so the public proxy answers 404 for our paths first
+export GOPROXY=https://proxy.golang.org,https://registry.example.com/go
+
+# or skip GOPROXY entirely and let discovery do the work (registry on 443)
+export GOPRIVATE=registry.example.com/*
+```
+
+The Go toolchain sends credentials from `~/.netrc`:
 
 ```
 machine registry.example.com
@@ -109,6 +123,13 @@ data/modules/<owner>/<name>/versions/<version>/go.zip
 data/modules/<owner>/<name>/versions/<version>/composer.zip
 data/modules/<owner>/<name>/versions/<version>/npm.tgz
 ```
+
+## Module paths and ports
+
+Go module paths cannot contain a port. A registry on `https://schemas.example.com`
+can serve module path `schemas.example.com/gen/go/acme/catalog`, and consumers
+need only `GOPRIVATE=schemas.example.com/*`. A registry on `:8080` cannot, and
+its consumers must set `GOPROXY` explicitly.
 
 ## Toolchain on the publishing side
 

@@ -24,6 +24,17 @@ command treats listed versions as releases and would prefer one over a tag.
 Zips are built with `golang.org/x/mod/zip`, so they satisfy every rule the go
 command checks on download.
 
+## Go module discovery
+
+Any request carrying `?go-get=1` is answered with a discovery document:
+
+```html
+<meta name="go-import" content="schemas.example.com/gen/go/acme/catalog mod https://schemas.example.com/go">
+```
+
+The `mod` VCS type tells the go command to fetch the module from the proxy at
+that URL. Requests for a package below the module root resolve to the root.
+
 ## Composer repository
 
 Mounted at `/composer`:

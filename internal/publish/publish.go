@@ -51,18 +51,18 @@ func SchemaArchive(m *config.Module) ([]byte, error) {
 // ResolveVersion picks the version for a publish: an explicit one wins, then
 // an exact git tag on HEAD, and otherwise a pseudo-version derived from the
 // schema digest so that every revision is addressable.
-func ResolveVersion(explicit, dir, schemaDigest string, now time.Time) (string, error) {
+func ResolveVersion(ctx context.Context, explicit, dir, schemaDigest string, now time.Time) (string, error) {
 	if explicit != "" {
 		return registry.NormalizeVersion(explicit)
 	}
-	if tag, err := gitTag(dir); err == nil && tag != "" {
+	if tag, err := gitTag(ctx, dir); err == nil && tag != "" {
 		return registry.NormalizeVersion(tag)
 	}
 	return registry.PseudoVersion(now, schemaDigest)
 }
 
-func gitTag(dir string) (string, error) {
-	cmd := exec.Command("git", "-C", dir, "describe", "--tags", "--exact-match", "HEAD")
+func gitTag(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "describe", "--tags", "--exact-match", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -89,7 +89,7 @@ func Prepare(ctx context.Context, buf *buftool.Buf, m *config.Module, opts Optio
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	version, err := ResolveVersion(opts.Version, m.Dir, registry.SHA256Hex(schema), now)
+	version, err := ResolveVersion(ctx, opts.Version, m.Dir, registry.SHA256Hex(schema), now)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +150,9 @@ func buildGo(ctx context.Context, buf *buftool.Buf, m *config.Module, t *config.
 	if err := generate(ctx, buf, m, t.Template, skip); err != nil {
 		return registry.Artifact{}, nil, err
 	}
+	if err := checkMajorSuffix(t.Module, version); err != nil {
+		return registry.Artifact{}, nil, err
+	}
 	out := m.Path(t.Out)
 	if err := writeGoMod(out, t); err != nil {
 		return registry.Artifact{}, nil, err
@@ -166,6 +169,23 @@ func buildGo(ctx context.Context, buf *buftool.Buf, m *config.Module, t *config.
 		SHA256:  registry.SHA256Hex(body),
 		Meta:    map[string]any{"require": t.Require},
 	}, body, nil
+}
+
+// checkMajorSuffix enforces Go's import compatibility rule: from v2 on, the
+// major version is part of the module path. Without it the go command refuses
+// the download, and the version is already immutable by then.
+func checkMajorSuffix(modPath, version string) error {
+	major := registry.MajorOf(version)
+	if major == "v0" || major == "v1" {
+		return nil
+	}
+	if strings.HasSuffix(modPath, "/"+major) {
+		return nil
+	}
+	return fmt.Errorf("go module %q publishing %s must end in /%s "+
+		"(Go puts the major version in the import path from v2 on): "+
+		"set targets.go.module to %s/%s and match go_package_prefix in the template",
+		modPath, version, major, modPath, major)
 }
 
 // writeGoMod generates the go.mod that ships inside the module zip. It is

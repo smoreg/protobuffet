@@ -15,9 +15,20 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.1.6
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go test -race -coverpkg=./... -coverprofile=coverage.out ./...
-      - run: go tool cover -func=coverage.out | tail -1
+      - name: coverage gate
+        run: |
+          go tool cover -func=coverage.out | tail -1
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
+          echo "total coverage: ${total}%"
+          # The registry speaks four package-manager protocols; a drop here
+          # means one of them lost its test.
+          awk -v t="$total" 'BEGIN { exit (t < 78) }' || {
+            echo "coverage ${total}% is below the 78% floor"; exit 1; }
 
   vulncheck:
     runs-on: ubuntu-latest

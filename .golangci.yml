@@ -1,0 +1,58 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose
+    - errorlint
+    - misspell
+    - noctx
+    - revive
+    - gosec
+
+  settings:
+    errcheck:
+      # Closing a file opened for reading cannot fail in a way we can act on.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+    gosec:
+      excludes:
+        # SHA-1 is required by the Composer and npm metadata formats; it is an
+        # integrity check, not a security boundary.
+        - G505
+        - G401
+        # Duplicate of errcheck, which is configured above.
+        - G104
+        # The registry serves files whose paths it built from validated
+        # module names and versions; see registry.Store.underRoot and
+        # registry.ParseModuleParts for the checks, and the traversal tests
+        # in internal/api/security_test.go.
+        - G304
+        - G703
+        # Published artifacts must be world-readable inside the container,
+        # and the data directory is 0755 for the same reason.
+        - G301
+        - G302
+        - G306
+        # buf and git are launched with arguments the operator configured.
+        - G204
+        # The CLI posts to the registry URL the operator configured.
+        - G704
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gosec, noctx]
+
+formatters:
+  enable:
+    - gofmt

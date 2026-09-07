@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -57,6 +58,13 @@ func newServer(t *testing.T) (*httptest.Server, config.Server) {
 // artifact per ecosystem, each in the exact format its package manager wants.
 func buildFixture(t *testing.T, version string) (api.PublishManifest, map[string][]byte) {
 	t.Helper()
+	return buildFixtureAt(t, version, goModPath)
+}
+
+// buildFixtureAt is buildFixture with an explicit Go module path, which major
+// versions need because Go encodes the major in the path from v2 on.
+func buildFixtureAt(t *testing.T, version, modPath string) (api.PublishManifest, map[string][]byte) {
+	t.Helper()
 	schemaDir := t.TempDir()
 	writeFile(t, filepath.Join(schemaDir, "buf.yaml"), "version: v2\n")
 	writeFile(t, filepath.Join(schemaDir, "catalog/v1/catalog.proto"), "syntax = \"proto3\";\npackage catalog.v1;\n")
@@ -66,9 +74,9 @@ func buildFixture(t *testing.T, version string) (api.PublishManifest, map[string
 	}
 
 	goDir := t.TempDir()
-	writeFile(t, filepath.Join(goDir, "go.mod"), "module "+goModPath+"\n\ngo 1.21\n")
+	writeFile(t, filepath.Join(goDir, "go.mod"), "module "+modPath+"\n\ngo 1.21\n")
 	writeFile(t, filepath.Join(goDir, "catalog/v1/catalog.pb.go"), "package catalogv1\n")
-	goZip, err := pack.GoModuleZip(goDir, goModPath, version)
+	goZip, err := pack.GoModuleZip(goDir, modPath, version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +115,7 @@ func buildFixture(t *testing.T, version string) (api.PublishManifest, map[string
 		SchemaSHA256: registry.SHA256Hex(schema),
 		Labels:       []string{"main"},
 		Artifacts: []registry.Artifact{
-			{Target: registry.TargetGo, Name: goModPath, Version: version, File: "go.zip", SHA256: registry.SHA256Hex(goZip)},
+			{Target: registry.TargetGo, Name: modPath, Version: version, File: "go.zip", SHA256: registry.SHA256Hex(goZip)},
 			{Target: registry.TargetComposer, Name: "acme/catalog-proto", Version: registry.EcosystemVersion(version), File: "composer.zip",
 				Meta: map[string]any{"require": map[string]any{"php": ">=8.1"}, "autoload": map[string]any{"classmap": []any{"."}}}},
 			{Target: registry.TargetNPM, Name: "@acme/catalog", Version: registry.EcosystemVersion(version), File: "npm.tgz",
@@ -141,11 +149,11 @@ func TestPublishRequiresAToken(t *testing.T) {
 	man, files := buildFixture(t, "v1.0.0")
 
 	c := client.New(ts.URL, "")
-	if _, _, err := c.Publish(man, files); err == nil || !strings.Contains(err.Error(), "401") {
+	if _, _, err := c.Publish(context.Background(), man, files); err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("anonymous publish err = %v, want 401", err)
 	}
 	c = client.New(ts.URL, "wrong-token")
-	if _, _, err := c.Publish(man, files); err == nil {
+	if _, _, err := c.Publish(context.Background(), man, files); err == nil {
 		t.Fatal("a bad token was accepted")
 	}
 }
@@ -155,7 +163,7 @@ func TestPublishAndServeEveryEcosystem(t *testing.T) {
 	man, files := buildFixture(t, "v1.0.0")
 	c := client.New(ts.URL, testToken)
 
-	resp, ok, err := c.Publish(man, files)
+	resp, ok, err := c.Publish(context.Background(), man, files)
 	if err != nil || !ok {
 		t.Fatalf("publish: ok=%v err=%v", ok, err)
 	}
@@ -254,11 +262,11 @@ func TestPublishAndServeEveryEcosystem(t *testing.T) {
 	})
 
 	t.Run("api listing", func(t *testing.T) {
-		mods, err := c.ListModules()
+		mods, err := c.ListModules(context.Background())
 		if err != nil || len(mods) != 1 || mods[0].Module != "acme/catalog" {
 			t.Fatalf("ListModules = %+v, %v", mods, err)
 		}
-		idx, err := c.Module("acme/catalog")
+		idx, err := c.Module(context.Background(), "acme/catalog")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -268,7 +276,7 @@ func TestPublishAndServeEveryEcosystem(t *testing.T) {
 	})
 
 	t.Run("schema download feeds buf breaking", func(t *testing.T) {
-		body, err := c.DownloadSchema("acme/catalog", "latest")
+		body, err := c.DownloadSchema(context.Background(), "acme/catalog", "latest")
 		if err != nil || len(body) == 0 {
 			t.Fatalf("DownloadSchema: %d bytes, %v", len(body), err)
 		}
@@ -280,13 +288,13 @@ func TestRepublishingDifferentContentIsRefused(t *testing.T) {
 	c := client.New(ts.URL, testToken)
 
 	man, files := buildFixture(t, "v1.0.0")
-	if _, ok, err := c.Publish(man, files); err != nil || !ok {
+	if _, ok, err := c.Publish(context.Background(), man, files); err != nil || !ok {
 		t.Fatalf("first publish: %v %v", ok, err)
 	}
 	other, otherFiles := buildFixture(t, "v1.0.0")
 	otherFiles["schema.zip"] = append(otherFiles["schema.zip"], 0)
 	other.SchemaSHA256 = registry.SHA256Hex(otherFiles["schema.zip"])
-	if _, _, err := c.Publish(other, otherFiles); err == nil {
+	if _, _, err := c.Publish(context.Background(), other, otherFiles); err == nil {
 		t.Fatal("republishing different content under the same version was allowed")
 	}
 }

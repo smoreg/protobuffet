@@ -1,0 +1,127 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func writeServerConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "buffetd.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestLoadServerFromEnvironmentAlone(t *testing.T) {
+	t.Setenv("BUFFET_ADMIN_TOKEN", "secret-token")
+	cfg, err := LoadServer("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Tokens) != 1 || cfg.Tokens[0].Subject != "env-admin" {
+		t.Fatalf("tokens = %+v", cfg.Tokens)
+	}
+	tok, ok := cfg.Authenticate("secret-token")
+	if !ok || !tok.Can("write") || !tok.Can("admin") {
+		t.Errorf("admin token cannot write: %+v %v", tok, ok)
+	}
+	if _, ok := cfg.Authenticate("wrong"); ok {
+		t.Error("wrong token accepted")
+	}
+	if _, ok := cfg.Authenticate(""); ok {
+		t.Error("empty token accepted")
+	}
+	// A registry that cannot be published to is a mistake, not a mode.
+	os.Unsetenv("BUFFET_ADMIN_TOKEN")
+	if _, err := LoadServer(""); err == nil {
+		t.Error("config without tokens accepted")
+	}
+}
+
+func TestLoadServerEnvironmentOverrides(t *testing.T) {
+	path := writeServerConfig(t, `
+listen: ":9000"
+data: /var/data
+base_url: https://from-file.example
+public_read: false
+breaking_check: best-effort
+tokens:
+  - subject: ci
+    sha256: `+HashToken("ci-token")+`
+    scopes: [write]
+`)
+	t.Setenv("BUFFET_BASE_URL", "https://from-env.example")
+	t.Setenv("BUFFET_LISTEN", ":9100")
+	t.Setenv("BUFFET_DATA", "/env/data")
+	t.Setenv("BUFFET_BREAKING_CHECK", "required")
+
+	cfg, err := LoadServer(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.BaseURL != "https://from-env.example" || cfg.Listen != ":9100" || cfg.Data != "/env/data" {
+		t.Errorf("env overrides not applied: %+v", cfg)
+	}
+	if cfg.BreakingCheck != BreakingRequired {
+		t.Errorf("breaking_check = %q", cfg.BreakingCheck)
+	}
+	if cfg.PublicRead {
+		t.Error("public_read from file was lost")
+	}
+}
+
+func TestLoadServerRejectsBadConfigs(t *testing.T) {
+	digest := HashToken("t")
+	cases := map[string]string{
+		"short digest":    "tokens:\n  - {subject: a, sha256: abc, scopes: [read]}\n",
+		"non-hex digest":  "tokens:\n  - {subject: a, sha256: " + strings.Repeat("z", 64) + ", scopes: [read]}\n",
+		"no scopes":       "tokens:\n  - {subject: a, sha256: " + digest + ", scopes: []}\n",
+		"unknown scope":   "tokens:\n  - {subject: a, sha256: " + digest + ", scopes: [wirte]}\n",
+		"no subject":      "tokens:\n  - {sha256: " + digest + ", scopes: [read]}\n",
+		"duplicate":       "tokens:\n  - {subject: a, sha256: " + digest + ", scopes: [read]}\n  - {subject: a, sha256: " + digest + ", scopes: [write]}\n",
+		"bad listen":      "listen: nonsense\ntokens:\n  - {subject: a, sha256: " + digest + ", scopes: [read]}\n",
+		"relative base":   "base_url: not-a-url\ntokens:\n  - {subject: a, sha256: " + digest + ", scopes: [read]}\n",
+		"base with path":  "base_url: https://x.example/registry\ntokens:\n  - {subject: a, sha256: " + digest + ", scopes: [read]}\n",
+		"bad policy":      "breaking_policy: whatever\ntokens:\n  - {subject: a, sha256: " + digest + ", scopes: [read]}\n",
+		"bad breaking":    "breaking_check: sometimes\ntokens:\n  - {subject: a, sha256: " + digest + ", scopes: [read]}\n",
+		"unknown top key": "listn: ':8080'\ntokens:\n  - {subject: a, sha256: " + digest + ", scopes: [read]}\n",
+	}
+	for name, body := range cases {
+		if _, err := LoadServer(writeServerConfig(t, body)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := LoadServer(filepath.Join(t.TempDir(), "missing.yaml")); err == nil {
+		t.Error("missing config file accepted")
+	}
+}
+
+func TestTokenScopes(t *testing.T) {
+	read := Token{Scopes: []string{"read"}}
+	write := Token{Scopes: []string{"write"}}
+	admin := Token{Scopes: []string{"admin"}}
+
+	if read.Can("write") || read.Can("admin") {
+		t.Error("read token has write or admin")
+	}
+	if !write.Can("write") || write.Can("admin") {
+		t.Error("write token scopes wrong")
+	}
+	// admin implies everything, which is what the API relies on.
+	if !admin.Can("read") || !admin.Can("write") || !admin.Can("admin") {
+		t.Error("admin does not imply the other scopes")
+	}
+}
+
+func TestBreakingModeHelpers(t *testing.T) {
+	if BreakingOff.Enabled() {
+		t.Error("off is enabled")
+	}
+	if !BreakingBestEffort.Enabled() || !BreakingRequired.Enabled() {
+		t.Error("enabled modes report disabled")
+	}
+}

@@ -65,8 +65,14 @@ func main() {
 	fmt.Printf("%s %s %d %s\n", p.GetSku(), p.GetTitle(), p.GetPriceMinor(), p.GetCurrency())
 }
 GO
+# GONOSUMDB scopes the checksum-database exemption to our own module paths;
+# GOSUMDB=off would disable verification for every dependency in the build.
+# (A production registry on port 443 does not need GOPROXY at all: the server
+# answers go-get discovery, so GOPRIVATE alone is enough. A test server on a
+# high port cannot, because a Go module path may not contain a port.)
 export GOPROXY="${REGISTRY}/go,https://proxy.golang.org,direct"
-export GOSUMDB=off
+export GONOSUMDB="registry.example.com/*"
+export GONOSUMCHECK=1
 export GOFLAGS=-mod=mod
 go get registry.example.com/gen/go/acme/catalog@v1.0.0
 go run . | grep -q "TEA-001" && echo "go consumer built and ran against the registry SDK"

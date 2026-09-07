@@ -128,3 +128,56 @@ func BenchmarkCatalogFindByTarget(b *testing.B) {
 		}
 	}
 }
+
+func TestCatalogAccessors(t *testing.T) {
+	store, _ := NewStore(t.TempDir())
+	c, _ := NewCatalog(store)
+	if c.Store() != store {
+		t.Error("Store() returned another store")
+	}
+	if c.Root() != store.Root() {
+		t.Errorf("Root() = %q, want %q", c.Root(), store.Root())
+	}
+	if _, err := c.Index(Module{Owner: "acme", Name: "missing"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Index of a missing module: %v", err)
+	}
+	if _, err := c.Resolve(Module{Owner: "acme", Name: "missing"}, "latest"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Resolve of a missing module: %v", err)
+	}
+
+	if _, err := publishTo(t, c, "acme/catalog", "v1.0.0", goArtifact("registry.test/gen/go/catalog", "v1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+	m := Module{Owner: "acme", Name: "catalog"}
+	if err := c.SetLabel(m, "stable", "v1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := c.Resolve(m, "stable"); err != nil || v.Version != "v1.0.0" {
+		t.Errorf("label resolve = %v, %v", v, err)
+	}
+	// The catalog serves files through the store it wraps.
+	if body, err := c.ReadAll(m, "v1.0.0", "schema.zip"); err != nil || len(body) == 0 {
+		t.Errorf("ReadAll = %d bytes, %v", len(body), err)
+	}
+	f, size, err := c.Open(m, "v1.0.0", "go.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if size == 0 {
+		t.Error("Open reported an empty artifact")
+	}
+}
+
+func TestMajorOf(t *testing.T) {
+	for in, want := range map[string]string{
+		"v1.2.3":      "v1",
+		"v2.0.0":      "v2",
+		"v0.9.0":      "v0",
+		"v2.0.0-rc.1": "v2",
+	} {
+		if got := MajorOf(in); got != want {
+			t.Errorf("MajorOf(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

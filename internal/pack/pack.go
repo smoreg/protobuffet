@@ -172,6 +172,10 @@ func TarGz(dir, prefix string, keep Filter) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// maxExtractedBytes bounds what a single archive may expand to. Schema
+// archives are kilobytes; anything approaching this is a decompression bomb.
+const maxExtractedBytes = 512 << 20
+
 // ExtractZip unpacks a zip into dir, stripping the first path element when
 // strip is true. Used to unpack schema archives for compatibility checks.
 func ExtractZip(data []byte, dir string, strip bool) error {
@@ -179,6 +183,7 @@ func ExtractZip(data []byte, dir string, strip bool) error {
 	if err != nil {
 		return err
 	}
+	remaining := int64(maxExtractedBytes)
 	for _, f := range zr.File {
 		name := f.Name
 		if strip {
@@ -209,14 +214,18 @@ func ExtractZip(data []byte, dir string, strip bool) error {
 		}
 		out, err := os.Create(target)
 		if err != nil {
-			rc.Close()
+			rc.Close() //nolint:errcheck // already failing
 			return err
 		}
-		_, err = io.Copy(out, rc)
-		rc.Close()
-		out.Close()
+		written, err := io.Copy(out, io.LimitReader(rc, remaining+1))
+		rc.Close()  //nolint:errcheck // read side, nothing to flush
+		out.Close() //nolint:errcheck // size checked below
 		if err != nil {
 			return err
+		}
+		remaining -= written
+		if remaining < 0 {
+			return fmt.Errorf("zip expands beyond %d bytes", maxExtractedBytes)
 		}
 	}
 	return nil

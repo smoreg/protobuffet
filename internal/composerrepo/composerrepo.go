@@ -130,7 +130,7 @@ func (h *Handler) servePackages(w http.ResponseWriter, base string) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	enc.Encode(doc)
+	enc.Encode(doc) //nolint:errcheck // a failed write means the client is gone
 }
 
 // serveDist handles "<owner>/<name>/<version>.zip".

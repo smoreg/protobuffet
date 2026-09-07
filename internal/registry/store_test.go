@@ -2,6 +2,9 @@ package registry
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -213,5 +216,71 @@ func TestPredecessorPicksTheVersionBelow(t *testing.T) {
 	}
 	if _, ok := (&Index{}).Predecessor("v1.0.0"); ok {
 		t.Error("empty index reported a predecessor")
+	}
+}
+
+func TestRepublishRejectsDifferentArtifacts(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	mod := Module{Owner: "acme", Name: "catalog"}
+	schema := []byte("schema")
+	first := []byte("generated code v1")
+
+	pub := func(body []byte, artifacts ...Artifact) error {
+		files := map[string][]byte{}
+		for _, a := range artifacts {
+			files[a.File] = body
+		}
+		_, err := s.Publish(PublishRequest{
+			Module: mod, Version: "v1.0.0", SchemaZip: schema,
+			Artifacts: artifacts, Files: files,
+		})
+		return err
+	}
+	art := func() Artifact {
+		return Artifact{Target: TargetGo, Name: "registry.test/gen/go/catalog", Version: "v1.0.0", File: "go.zip"}
+	}
+
+	if err := pub(first, art()); err != nil {
+		t.Fatal(err)
+	}
+	// Same everything: a retried CI job must not fail.
+	if err := pub(first, art()); err != nil {
+		t.Fatalf("identical re-publish rejected: %v", err)
+	}
+	// Same schema, different generated code: silently keeping the old code is
+	// how a release goes missing.
+	err := pub([]byte("generated code v2"), art())
+	if !errors.Is(err, ErrVersionExists) || !strings.Contains(err.Error(), "content differs") {
+		t.Fatalf("err = %v, want ErrVersionExists with a reason", err)
+	}
+	// Adding a target to an existing version is also a different release.
+	err = pub(first, art(), Artifact{Target: TargetNPM, Name: "@acme/catalog", Version: "1.0.0", File: "npm.tgz"})
+	if !errors.Is(err, ErrVersionExists) {
+		t.Fatalf("err = %v, want ErrVersionExists", err)
+	}
+}
+
+func TestCleanOrphans(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	mod := Module{Owner: "acme", Name: "catalog"}
+	publish(t, s, "v1.0.0", []byte("a"))
+
+	orphan := filepath.Join(s.Root(), "modules", "acme", "catalog", "versions", "v9.9.9")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := s.CleanOrphans()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || !strings.HasSuffix(removed[0], "v9.9.9") {
+		t.Fatalf("removed = %v", removed)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("orphan survived")
+	}
+	// The real version must be untouched.
+	if _, err := s.Resolve(mod, "v1.0.0"); err != nil {
+		t.Errorf("published version removed: %v", err)
 	}
 }

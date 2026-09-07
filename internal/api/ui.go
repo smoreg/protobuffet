@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/smoreg/protobuffet/internal/registry"
@@ -102,6 +104,10 @@ func (s *Server) baseURL(r *http.Request) string {
 }
 
 func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
+	// `go get` discovery can land on any path under the registry host.
+	if s.serveGoImport(w, r) {
+		return
+	}
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
@@ -127,7 +133,7 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 		}
 		data.Modules = append(data.Modules, um)
 	}
-	renderUI(w, data)
+	s.renderUI(w, data)
 }
 
 func (s *Server) uiModule(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +173,7 @@ func (s *Server) uiModule(w http.ResponseWriter, r *http.Request) {
 	if latest, ok := idx.Latest(); ok {
 		data.Install = installSnippets(latest, s.baseURL(r))
 	}
-	renderUI(w, data)
+	s.renderUI(w, data)
 }
 
 // installSnippets renders the copy-paste commands for each published target.
@@ -176,8 +182,8 @@ func installSnippets(v registry.Version, base string) []uiInstall {
 	if a, ok := v.Artifact(registry.TargetGo); ok {
 		out = append(out, uiInstall{
 			Title: "Go",
-			Body: "export GOPROXY=" + base + "/go,https://proxy.golang.org,direct\n" +
-				"export GOSUMDB=off\n" +
+			Body: "# the registry answers go-get discovery, so GOPROXY stays untouched\n" +
+				"export GOPRIVATE=" + hostOf(base) + "/*\n" +
 				"go get " + a.Name + "@" + a.Version,
 		})
 	}
@@ -203,9 +209,24 @@ func installSnippets(v registry.Version, base string) []uiInstall {
 	return out
 }
 
-func renderUI(w http.ResponseWriter, data uiData) {
+// hostOf strips the scheme, for use in GOPRIVATE patterns.
+func hostOf(base string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(base, "https://"), "http://")
+}
+
+func (s *Server) renderUI(w http.ResponseWriter, data uiData) {
+	// Rendering straight into the ResponseWriter would send a 200 with a
+	// truncated page if the template failed halfway.
+	var buf bytes.Buffer
+	if err := uiTmpl.Execute(&buf, data); err != nil {
+		s.log.Error("render ui", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	uiTmpl.Execute(w, data)
+	if _, err := buf.WriteTo(w); err != nil {
+		s.log.Debug("write ui response", "err", err)
+	}
 }
 
 func plural(n int, word string) string {

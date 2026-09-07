@@ -23,9 +23,34 @@ var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "buffetd:", err)
+		fmt.Fprintln(os.Stderr, "buffetd:", err) //nolint:errcheck
 		os.Exit(1)
 	}
+}
+
+// build wires the store, the catalog and the HTTP server together. It is
+// separate from run so tests can exercise it without signals or a listener.
+func build(cfg config.Server, log *slog.Logger) (*http.Server, error) {
+	store, err := registry.NewStore(cfg.Data)
+	if err != nil {
+		return nil, err
+	}
+	catalog, err := registry.NewCatalog(store)
+	if err != nil {
+		return nil, fmt.Errorf("load registry: %w", err)
+	}
+	srv, err := api.New(cfg, catalog, log)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Uploads and downloads can be large and slow; the body limit is
+		// enforced per handler instead of by a write timeout.
+		IdleTimeout: 2 * time.Minute,
+	}, nil
 }
 
 // baseURLOrDerived makes the log line honest about the empty default.
@@ -63,26 +88,9 @@ func run() error {
 		cfg.Data = *data
 	}
 
-	store, err := registry.NewStore(cfg.Data)
+	httpSrv, err := build(cfg, log)
 	if err != nil {
 		return err
-	}
-	catalog, err := registry.NewCatalog(store)
-	if err != nil {
-		return fmt.Errorf("load registry: %w", err)
-	}
-	srv, err := api.New(cfg, catalog, log)
-	if err != nil {
-		return err
-	}
-
-	httpSrv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		// Uploads and downloads can be large and slow; the body limit is
-		// enforced per handler instead of by a write timeout.
-		IdleTimeout: 2 * time.Minute,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -92,7 +100,7 @@ func run() error {
 	go func() {
 		log.Info("listening",
 			"addr", cfg.Listen,
-			"data", catalog.Root(),
+			"data", cfg.Data,
 			"base_url", baseURLOrDerived(cfg.BaseURL),
 			"public_read", cfg.PublicRead,
 			"breaking_check", cfg.BreakingCheck,

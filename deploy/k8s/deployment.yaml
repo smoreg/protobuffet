@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: protobuffet
+  labels: {app: protobuffet}
+spec:
+  replicas: 1
+  # The data directory is a ReadWriteOnce volume, so a second pod could not
+  # mount it during a rolling update. Storage is single-writer by design.
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: protobuffet}
+  template:
+    metadata:
+      labels: {app: protobuffet}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Without fsGroup the distroless nonroot user cannot write to the PVC.
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: buffetd
+          image: ghcr.io/smoreg/protobuffet:latest
+          args: ["-config", "/etc/protobuffet/buffetd.yaml"]
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            # Must match the Ingress host: it is the hostname consumers put in
+            # GOPRIVATE, and the prefix of every Go module path served here.
+            - name: BUFFET_BASE_URL
+              value: https://schemas.example.com
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: config, mountPath: /etc/protobuffet, readOnly: true}
+            # buf unpacks schema archives here during the compatibility check.
+            - {name: tmp, mountPath: /tmp}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            # The compatibility check runs buf on the uploaded schema; give it
+            # room, or a large module makes the pod OOM mid-publish.
+            limits: {cpu: "1", memory: 512Mi}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: protobuffet-data}
+        - name: config
+          secret: {secretName: protobuffet-config}
+        - name: tmp
+          emptyDir: {sizeLimit: 1Gi}

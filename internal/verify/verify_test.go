@@ -171,3 +171,32 @@ func TestArtifactDispatch(t *testing.T) {
 		t.Error("unknown target accepted")
 	}
 }
+
+func TestGoModuleMajorSuffix(t *testing.T) {
+	// From v2 on, Go requires the major version in the import path. Publishing
+	// without it produces a module the go command downloads and then refuses.
+	body := handmadeZip(t, map[string]string{
+		"registry.test/gen/go/acme/catalog@v2.0.0/go.mod": "module registry.test/gen/go/acme/catalog\n",
+	})
+	err := GoModuleZip(body, "registry.test/gen/go/acme/catalog", "v2.0.0")
+	if err == nil || !strings.Contains(err.Error(), "/v2") {
+		t.Errorf("err = %v, want a hint about the /v2 suffix", err)
+	}
+
+	// With the suffix it passes.
+	const v2Path = "registry.test/gen/go/acme/catalog/v2"
+	ok := handmadeZip(t, map[string]string{
+		v2Path + "@v2.0.0/go.mod": "module " + v2Path + "\n",
+		v2Path + "@v2.0.0/api.go": "package catalogv1\n",
+	})
+	if err := GoModuleZip(ok, v2Path, "v2.0.0"); err != nil {
+		t.Errorf("valid v2 module rejected: %v", err)
+	}
+	// v0 and v1 carry no suffix.
+	v1 := handmadeZip(t, map[string]string{
+		"registry.test/gen/go/acme/catalog@v1.0.0/go.mod": "module registry.test/gen/go/acme/catalog\n",
+	})
+	if err := GoModuleZip(v1, "registry.test/gen/go/acme/catalog", "v1.0.0"); err != nil {
+		t.Errorf("v1 module rejected: %v", err)
+	}
+}

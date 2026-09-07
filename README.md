@@ -91,13 +91,26 @@ A working example is in [`examples/catalog`](examples/catalog).
 
 ## Consume it
 
-**Go** — point `GOPROXY` at the registry:
+**Go** — the registry answers `go get` discovery, so nothing but `GOPRIVATE`
+is needed:
+
+```sh
+export GOPRIVATE=schemas.example.com/*
+go get schemas.example.com/gen/go/acme/catalog@v1.0.0
+```
+
+This requires the registry to be reachable on the default port under the same
+hostname that starts the module path: a Go module path cannot contain a port.
+For a registry on another port, point `GOPROXY` at it instead:
 
 ```sh
 export GOPROXY=http://localhost:8080/go,https://proxy.golang.org,direct
-export GOSUMDB=off
+export GONOSUMDB='localhost/*'
 go get registry.example.com/gen/go/acme/catalog@v1.0.0
 ```
+
+Never `GOSUMDB=off`: it disables checksum verification for every dependency in
+the build, not just for schemas.
 
 **Python**:
 
@@ -155,6 +168,8 @@ surface narrow.
 | Schema dependencies (`deps:` resolution) | yes | no, use buf.build or git |
 | Generated documentation, search | yes | no |
 | Organizations, RBAC, SSO, SCIM | yes | no, tokens with read/write scopes |
+| Package-name ownership across modules | yes | yes |
+| Refuse to start when the gate cannot run | — | yes (`breaking_check: required`) |
 | Reflection API, webhooks, Studio | yes | no |
 
 If you need organization management, SSO or hosted plugins, buy the BSR.
@@ -180,6 +195,7 @@ buffet login     store a token for a registry
 buffet token     mint a token and print its config digest
 ```
 
+Kubernetes: [`docs/kubernetes.md`](docs/kubernetes.md) and [`deploy/k8s`](deploy/k8s).
 Server configuration: [`buffetd.example.yaml`](buffetd.example.yaml).
 Running it in production: [`docs/self-hosting.md`](docs/self-hosting.md).
 Endpoints and formats: [`docs/protocol.md`](docs/protocol.md).
@@ -200,12 +216,20 @@ rejected and an added field is accepted.
 It needs `buf`, `protoc-gen-go` and `protoc` on PATH. PHP and Python parts are
 skipped if those toolchains are missing.
 
-## Two things that cost people an afternoon
+## Things that cost people an afternoon
 
 - `targets.go.module` must equal the `go_package_prefix` in the generation
   template. Otherwise consumers import a path the registry does not serve.
+- A Go module path cannot contain a port, so `go get` without `GOPROXY` works
+  only when the registry serves on 443 under the hostname that starts the
+  module path.
+- From `v2.0.0` on, Go puts the major version in the import path. Publishing
+  `v2` means `targets.go.module` ends in `/v2`, and the generation template's
+  `go_package_prefix` matches. The registry refuses the push otherwise.
 - PHP and Python generation use `protoc_builtin`, which needs the `protoc`
   binary. The Go plugin is standalone and does not.
+- With `public_read: false`, put the registry *after* the public proxy in
+  `GOPROXY`: the go command only falls through on 404 and 410, not on 401.
 
 ## License
 

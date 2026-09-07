@@ -5,8 +5,11 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -132,7 +135,7 @@ func LoadServer(path string) (Server, error) {
 		}
 		dec := yaml.NewDecoder(bytesReader(b))
 		dec.KnownFields(true)
-		if err := dec.Decode(&cfg); err != nil && err != io.EOF {
+		if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 			return cfg, fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
@@ -175,15 +178,58 @@ func LoadServer(path string) (Server, error) {
 	if len(cfg.Tokens) == 0 {
 		return cfg, fmt.Errorf("no tokens configured: set BUFFET_ADMIN_TOKEN or list tokens in the config")
 	}
-	for i, t := range cfg.Tokens {
-		if t.SHA256 == "" {
-			return cfg, fmt.Errorf("tokens[%d] (%s): sha256 is required", i, t.Subject)
+	if err := cfg.validateTokens(); err != nil {
+		return cfg, err
+	}
+	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
+		return cfg, fmt.Errorf("listen %q: %w", cfg.Listen, err)
+	}
+	if cfg.BaseURL != "" {
+		u, err := url.Parse(cfg.BaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return cfg, fmt.Errorf("base_url %q: want an absolute URL such as https://schemas.example.com", cfg.BaseURL)
 		}
-		if len(t.Scopes) == 0 {
-			return cfg, fmt.Errorf("tokens[%d] (%s): at least one scope is required", i, t.Subject)
+		// Every route is mounted at the root, and package metadata is built
+		// from base_url; a path prefix here would produce URLs nothing serves.
+		if u.Path != "" {
+			return cfg, fmt.Errorf("base_url %q: a path prefix is not supported, use the host only", cfg.BaseURL)
 		}
 	}
 	return cfg, nil
+}
+
+var validScopes = map[string]bool{"read": true, "write": true, "admin": true}
+
+func (s Server) validateTokens() error {
+	seen := map[string]bool{}
+	for i, t := range s.Tokens {
+		if t.Subject == "" {
+			return fmt.Errorf("tokens[%d]: subject is required", i)
+		}
+		if seen[t.Subject] {
+			return fmt.Errorf("tokens[%d]: duplicate subject %q", i, t.Subject)
+		}
+		seen[t.Subject] = true
+
+		// A digest of the wrong shape never matches anything, which looks
+		// exactly like a wrong token to whoever is debugging it.
+		if len(t.SHA256) != 64 {
+			return fmt.Errorf("tokens[%d] (%s): sha256 must be 64 hex characters, got %d", i, t.Subject, len(t.SHA256))
+		}
+		if _, err := hex.DecodeString(t.SHA256); err != nil {
+			return fmt.Errorf("tokens[%d] (%s): sha256 is not hexadecimal", i, t.Subject)
+		}
+		if len(t.Scopes) == 0 {
+			return fmt.Errorf("tokens[%d] (%s): at least one scope is required", i, t.Subject)
+		}
+		for _, scope := range t.Scopes {
+			// A typo here silently produces a token that can do nothing.
+			if !validScopes[scope] {
+				return fmt.Errorf("tokens[%d] (%s): unknown scope %q, want read, write or admin", i, t.Subject, scope)
+			}
+		}
+	}
+	return nil
 }
 
 // HashToken returns the hex sha256 of a token. Tokens are high-entropy random

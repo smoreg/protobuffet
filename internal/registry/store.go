@@ -38,10 +38,24 @@ type Store struct {
 	locks map[string]*sync.Mutex
 }
 
-// NewStore prepares the directory tree under root.
+// NewStore prepares the directory tree under root and verifies it is writable.
+// The check matters in containers: a volume owned by root leaves a nonroot
+// process able to read but not write, and without this the failure surfaces
+// only at the first publish.
 func NewStore(root string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(root, "modules"), 0o755); err != nil {
 		return nil, fmt.Errorf("create store root: %w", err)
+	}
+	probe, err := os.CreateTemp(root, ".writable-")
+	if err != nil {
+		return nil, fmt.Errorf("data directory %s is not writable: %w (check volume ownership: the container runs as uid 65532)", root, err)
+	}
+	name := probe.Name()
+	if err := probe.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Remove(name); err != nil {
+		return nil, err
 	}
 	return &Store{root: root, locks: map[string]*sync.Mutex{}}, nil
 }
@@ -191,10 +205,15 @@ func (s *Store) Publish(req PublishRequest) (Version, error) {
 	}
 
 	if existing, ok := idx.Find(version); ok {
-		if existing.SchemaSHA == schemaSHA {
-			return existing, nil // idempotent re-publish
+		// A CI retry re-uploads byte-identical content and must succeed. The
+		// same schema with different generated code is a different release
+		// wearing an old number, and that has to be refused: consumers who
+		// already resolved this version would never see the new code.
+		if diff := compareVersions(existing, schemaSHA, req.Artifacts); diff == "" {
+			return existing, nil
+		} else {
+			return Version{}, fmt.Errorf("%s@%s: %s: %w", req.Module, version, diff, ErrVersionExists)
 		}
-		return Version{}, fmt.Errorf("%s@%s: %w", req.Module, version, ErrVersionExists)
 	}
 
 	now := req.Now
@@ -209,20 +228,41 @@ func (s *Store) Publish(req PublishRequest) (Version, error) {
 		PublishedBy: req.PublishedBy,
 	}
 
-	dir := s.versionDir(req.Module, version)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Stage the whole version in a temporary directory and move it into place
+	// once every file is written. A crash mid-publish then leaves a staging
+	// directory to clean up, never a half-written version that the index does
+	// not know about but a later publish would silently reuse.
+	final := s.versionDir(req.Module, version)
+	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		return Version{}, err
 	}
-	if err := writeFileAtomic(filepath.Join(dir, "schema.zip"), req.SchemaZip); err != nil {
+	// A leftover directory without an index entry is an orphan from an earlier
+	// crash: the index is authoritative, so it goes.
+	if _, statErr := os.Stat(final); statErr == nil {
+		if err := os.RemoveAll(final); err != nil {
+			return Version{}, fmt.Errorf("remove orphaned version directory: %w", err)
+		}
+	}
+	staging, err := os.MkdirTemp(filepath.Dir(final), ".staging-"+version+"-")
+	if err != nil {
+		return Version{}, err
+	}
+	// Removing a directory that was already renamed into place is expected.
+	defer os.RemoveAll(staging) //nolint:errcheck // best-effort cleanup of a staging dir
+
+	if err := writeFileAtomic(filepath.Join(staging, "schema.zip"), req.SchemaZip); err != nil {
 		return Version{}, err
 	}
 	for _, a := range req.Artifacts {
 		body := req.Files[a.File]
-		if err := writeFileAtomic(filepath.Join(dir, a.File), body); err != nil {
+		if err := writeFileAtomic(filepath.Join(staging, a.File), body); err != nil {
 			return Version{}, err
 		}
 		a.Size = int64(len(body))
 		v.Artifacts[a.Target] = a
+	}
+	if err := os.Rename(staging, final); err != nil {
+		return Version{}, fmt.Errorf("publish %s@%s: %w", req.Module, version, err)
 	}
 
 	idx.Versions = append(idx.Versions, v)
@@ -239,9 +279,36 @@ func (s *Store) Publish(req PublishRequest) (Version, error) {
 	}
 	idx.Updated = now.UTC()
 	if err := s.writeIndex(req.Module, idx); err != nil {
+		// The files are in place but unreferenced; the next publish of this
+		// version will clear them as an orphan.
 		return Version{}, err
 	}
 	return v, nil
+}
+
+// compareVersions describes how a re-publish differs from what is stored, or
+// returns "" when the two are identical.
+func compareVersions(existing Version, schemaSHA string, artifacts []Artifact) string {
+	if existing.SchemaSHA != schemaSHA {
+		return "schema differs"
+	}
+	if len(existing.Artifacts) != len(artifacts) {
+		return fmt.Sprintf("published with %d artifacts, re-published with %d",
+			len(existing.Artifacts), len(artifacts))
+	}
+	for _, a := range artifacts {
+		old, ok := existing.Artifacts[a.Target]
+		if !ok {
+			return fmt.Sprintf("target %s is new", a.Target)
+		}
+		if old.Name != a.Name {
+			return fmt.Sprintf("target %s: package name changed from %q to %q", a.Target, old.Name, a.Name)
+		}
+		if a.SHA256 != "" && old.SHA256 != a.SHA256 {
+			return fmt.Sprintf("target %s: content differs", a.Target)
+		}
+	}
+	return ""
 }
 
 func (s *Store) writeIndex(m Module, idx *Index) error {
@@ -327,7 +394,7 @@ func (s *Store) Open(m Module, version, file string) (io.ReadSeekCloser, int64, 
 	}
 	st, err := f.Stat()
 	if err != nil {
-		f.Close()
+		f.Close() //nolint:errcheck // already failing
 		return nil, 0, err
 	}
 	return f, st.Size(), nil
@@ -367,19 +434,60 @@ func (s *Store) FindByTarget(t Target, name string) (Module, *Index, error) {
 	return Module{}, nil, fmt.Errorf("%s package %q: %w", t, name, ErrNotFound)
 }
 
+// CleanOrphans removes version directories that no index references, and
+// leftover staging directories. Returns the paths removed.
+func (s *Store) CleanOrphans() ([]string, error) {
+	mods, err := s.ListModules()
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, m := range mods {
+		mu := s.lock(m)
+		mu.Lock()
+		idx, err := s.Index(m)
+		if err != nil {
+			mu.Unlock()
+			return removed, err
+		}
+		known := map[string]bool{}
+		for _, v := range idx.Versions {
+			known[v.Version] = true
+		}
+		entries, err := os.ReadDir(filepath.Join(s.moduleDir(m), "versions"))
+		if err != nil && !os.IsNotExist(err) {
+			mu.Unlock()
+			return removed, err
+		}
+		for _, e := range entries {
+			if !e.IsDir() || known[e.Name()] {
+				continue
+			}
+			path := filepath.Join(s.moduleDir(m), "versions", e.Name())
+			if err := os.RemoveAll(path); err != nil {
+				mu.Unlock()
+				return removed, err
+			}
+			removed = append(removed, path)
+		}
+		mu.Unlock()
+	}
+	return removed, nil
+}
+
 func writeFileAtomic(path string, body []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer os.Remove(tmp.Name()) //nolint:errcheck // best-effort cleanup, the file is renamed away on success
 	if _, err := tmp.Write(body); err != nil {
-		tmp.Close()
+		tmp.Close() //nolint:errcheck // already failing
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		tmp.Close() //nolint:errcheck // already failing
 		return err
 	}
 	if err := tmp.Close(); err != nil {
@@ -388,7 +496,20 @@ func writeFileAtomic(path string, body []byte) error {
 	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	// A rename is only durable once the directory entry is flushed.
+	return fsyncDir(dir)
+}
+
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func sha256hex(b []byte) string {

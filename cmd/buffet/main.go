@@ -7,8 +7,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,36 +45,51 @@ common flags:
 `
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+	code := run(os.Args[1:], os.Stdout, os.Stderr)
+	os.Exit(code)
+}
+
+// ErrUsage asks the caller to exit with the usage status.
+var errUsage = errors.New("usage")
+
+// run executes one command and returns the process exit code. Keeping main to
+// three lines makes the commands testable without spawning a binary.
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprint(stderr, usage) //nolint:errcheck
+		return 2
 	}
 	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "publish":
-		err = cmdPublish(os.Args[2:])
+		err = cmdPublish(args[1:], stdout)
 	case "check":
-		err = cmdCheck(os.Args[2:])
+		err = cmdCheck(args[1:], stdout)
 	case "list":
-		err = cmdList(os.Args[2:])
+		err = cmdList(args[1:], stdout)
 	case "info":
-		err = cmdInfo(os.Args[2:])
+		err = cmdInfo(args[1:], stdout)
 	case "login":
-		err = cmdLogin(os.Args[2:])
+		err = cmdLogin(args[1:], stdout)
 	case "token":
-		err = cmdToken()
+		err = cmdToken(stdout)
 	case "version", "--version", "-version":
-		fmt.Println("buffet", version)
+		fmt.Fprintln(stdout, "buffet", version) //nolint:errcheck
 	case "help", "-h", "--help":
-		fmt.Print(usage)
+		fmt.Fprint(stdout, usage) //nolint:errcheck
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", os.Args[1], usage)
-		os.Exit(2)
+		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage) //nolint:errcheck
+		return 2
 	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "buffet:", err)
-		os.Exit(1)
+	switch {
+	case errors.Is(err, errUsage):
+		fmt.Fprint(stderr, usage) //nolint:errcheck
+		return 2
+	case err != nil:
+		fmt.Fprintln(stderr, "buffet:", err) //nolint:errcheck
+		return 1
 	}
+	return 0
 }
 
 // registryFlags are shared by every command that talks to a registry.
@@ -104,7 +121,7 @@ func (f *registryFlags) client() (*client.Client, error) {
 	return client.New(url, token), nil
 }
 
-func cmdPublish(args []string) error {
+func cmdPublish(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("publish", flag.ExitOnError)
 	var rf registryFlags
 	addRegistryFlags(fs, &rf)
@@ -116,7 +133,7 @@ func cmdPublish(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "build artifacts and print what would be pushed")
 	allowBreaking := fs.Bool("allow-breaking", false, "publish even if the change breaks consumers (admin token only)")
 	bufPath := fs.String("buf", "", "path to the buf binary")
-	fs.Parse(args)
+	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
 
 	m, err := config.LoadModule(*configPath)
 	if err != nil {
@@ -142,13 +159,13 @@ func cmdPublish(args []string) error {
 		return err
 	}
 
-	fmt.Printf("module   %s\nversion  %s\nschema   %d bytes (sha256 %s)\n",
+	fmt.Fprintf(stdout, "module   %s\nversion  %s\nschema   %d bytes (sha256 %s)\n", //nolint:errcheck
 		build.Module, build.Version, len(build.SchemaZip), registry.SHA256Hex(build.SchemaZip)[:12])
 	for _, a := range build.Artifacts {
-		fmt.Printf("target   %-9s %s@%s (%d bytes)\n", a.Target, a.Name, a.Version, len(build.Files[a.File]))
+		fmt.Fprintf(stdout, "target   %-9s %s@%s (%d bytes)\n", a.Target, a.Name, a.Version, len(build.Files[a.File])) //nolint:errcheck
 	}
 	if *dryRun {
-		fmt.Println("\ndry run: nothing was pushed")
+		fmt.Fprintln(stdout, "\ndry run: nothing was pushed") //nolint:errcheck
 		return nil
 	}
 
@@ -166,7 +183,7 @@ func cmdPublish(args []string) error {
 		man.Labels = []string{*label}
 	}
 	man.AllowBreaking = *allowBreaking
-	resp, ok, err := c.Publish(man, build.Files)
+	resp, ok, err := c.Publish(ctx, man, build.Files)
 	if err != nil {
 		return err
 	}
@@ -177,28 +194,28 @@ func cmdPublish(args []string) error {
 		}
 		return fmt.Errorf("registry refused the push")
 	}
-	fmt.Printf("\npublished %s@%s\n", resp.Module, resp.Version.Version)
+	fmt.Fprintf(stdout, "\npublished %s@%s\n", resp.Module, resp.Version.Version) //nolint:errcheck
 	if b := resp.Breaking; b != nil {
 		switch {
 		case b.Overridden != "":
-			fmt.Printf("compatibility: BREAKING against %s, published anyway (%s)\n", b.Against, b.Overridden)
+			fmt.Fprintf(stdout, "compatibility: BREAKING against %s, published anyway (%s)\n", b.Against, b.Overridden) //nolint:errcheck
 		case b.Checked:
-			fmt.Printf("compatibility: checked against %s, no breaking changes\n", b.Against)
+			fmt.Fprintf(stdout, "compatibility: checked against %s, no breaking changes\n", b.Against) //nolint:errcheck
 		case b.Skipped != "":
-			fmt.Printf("compatibility: not checked (%s)\n", b.Skipped)
+			fmt.Fprintf(stdout, "compatibility: not checked (%s)\n", b.Skipped) //nolint:errcheck
 		}
 	}
 	return nil
 }
 
-func cmdCheck(args []string) error {
+func cmdCheck(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
 	var rf registryFlags
 	addRegistryFlags(fs, &rf)
 	configPath := fs.String("config", ".", "module config file or directory")
 	against := fs.String("against", "latest", "version or label to compare against")
 	bufPath := fs.String("buf", "", "path to the buf binary")
-	fs.Parse(args)
+	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
 
 	m, err := config.LoadModule(*configPath)
 	if err != nil {
@@ -212,8 +229,9 @@ func cmdCheck(args []string) error {
 	if err != nil {
 		return err
 	}
+	ctx := context.Background()
 
-	prev, err := c.DownloadSchema(m.Module, *against)
+	prev, err := c.DownloadSchema(ctx, m.Module, *against)
 	if err != nil {
 		return err
 	}
@@ -221,63 +239,63 @@ func cmdCheck(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(dir)
+	defer os.RemoveAll(dir) //nolint:errcheck // best-effort cleanup of a temp dir
 	prevPath := filepath.Join(dir, "previous.zip")
 	if err := os.WriteFile(prevPath, prev, 0o600); err != nil {
 		return err
 	}
 
-	res, err := buf.Breaking(context.Background(), m.Dir, "", prevPath)
+	res, err := buf.Breaking(ctx, m.Dir, "", prevPath)
 	if err != nil {
 		return err
 	}
 	if res.Compatible {
-		fmt.Printf("compatible with %s@%s\n", m.Module, *against)
+		fmt.Fprintf(stdout, "compatible with %s@%s\n", m.Module, *against) //nolint:errcheck
 		return nil
 	}
-	fmt.Println(res.Output)
+	fmt.Fprintln(stdout, res.Output) //nolint:errcheck
 	return fmt.Errorf("breaking changes against %s@%s", m.Module, *against)
 }
 
-func cmdList(args []string) error {
+func cmdList(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	var rf registryFlags
 	addRegistryFlags(fs, &rf)
-	fs.Parse(args)
+	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
 
 	c, err := rf.client()
 	if err != nil {
 		return err
 	}
-	mods, err := c.ListModules()
+	mods, err := c.ListModules(context.Background())
 	if err != nil {
 		return err
 	}
 	if len(mods) == 0 {
-		fmt.Println("no modules published yet")
+		fmt.Fprintln(stdout, "no modules published yet") //nolint:errcheck
 		return nil
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "MODULE\tLATEST\tVERSIONS\tUPDATED")
+	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "MODULE\tLATEST\tVERSIONS\tUPDATED") //nolint:errcheck // buffered by tabwriter, Flush reports the error
 	for _, m := range mods {
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", m.Module, m.Latest, m.Versions, m.Updated.Format(time.DateOnly))
+		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", m.Module, m.Latest, m.Versions, m.Updated.Format(time.DateOnly)) //nolint:errcheck
 	}
 	return w.Flush()
 }
 
-func cmdInfo(args []string) error {
+func cmdInfo(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("info", flag.ExitOnError)
 	var rf registryFlags
 	addRegistryFlags(fs, &rf)
-	fs.Parse(args)
+	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: buffet info <owner/name>")
+		return fmt.Errorf("info takes one module: %w", errUsage)
 	}
 	c, err := rf.client()
 	if err != nil {
 		return err
 	}
-	idx, err := c.Module(fs.Arg(0))
+	idx, err := c.Module(context.Background(), fs.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -285,8 +303,8 @@ func cmdInfo(args []string) error {
 	for name, v := range idx.Labels {
 		labels[v] = append(labels[v], name)
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "VERSION\tPUBLISHED\tTARGETS\tLABELS")
+	w := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "VERSION\tPUBLISHED\tTARGETS\tLABELS") //nolint:errcheck // buffered by tabwriter, Flush reports the error
 	for i := len(idx.Versions) - 1; i >= 0; i-- {
 		v := idx.Versions[i]
 		var targets []string
@@ -295,24 +313,24 @@ func cmdInfo(args []string) error {
 				targets = append(targets, fmt.Sprintf("%s:%s", t, a.Name))
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", //nolint:errcheck
 			v.Version, v.CreatedAt.Format(time.RFC3339), strings.Join(targets, " "), strings.Join(labels[v.Version], ","))
 	}
 	return w.Flush()
 }
 
-func cmdLogin(args []string) error {
+func cmdLogin(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	var rf registryFlags
 	addRegistryFlags(fs, &rf)
-	fs.Parse(args)
+	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
 
 	url := rf.registry
 	if url == "" {
 		url = os.Getenv("BUFFET_REGISTRY")
 	}
 	if url == "" || rf.token == "" {
-		return fmt.Errorf("usage: buffet login -registry URL -token TOKEN")
+		return fmt.Errorf("login needs -registry and -token: %w", errUsage)
 	}
 	path, err := credentialsPath()
 	if err != nil {
@@ -330,19 +348,19 @@ func cmdLogin(args []string) error {
 	if err := os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
 		return err
 	}
-	fmt.Printf("token stored in %s\n", path)
+	fmt.Fprintf(stdout, "token stored in %s\n", path) //nolint:errcheck
 	return nil
 }
 
 // cmdToken mints a token and prints both halves: the secret for the client and
 // the digest for the server config, so nobody has to hash it by hand.
-func cmdToken() error {
+func cmdToken(stdout io.Writer) error {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return err
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
-	fmt.Printf("token:  %s\n\nadd to buffetd.yaml:\n\ntokens:\n  - subject: ci\n    sha256: %s\n    scopes: [write]\n",
+	fmt.Fprintf(stdout, "token:  %s\n\nadd to buffetd.yaml:\n\ntokens:\n  - subject: ci\n    sha256: %s\n    scopes: [write]\n", //nolint:errcheck
 		token, config.HashToken(token))
 	return nil
 }
@@ -365,7 +383,10 @@ func loadCredentials() map[string]string {
 	if err != nil {
 		return out
 	}
-	json.Unmarshal(b, &out)
+	if err := json.Unmarshal(b, &out); err != nil {
+		// A corrupt credentials file behaves like no credentials at all.
+		return map[string]string{}
+	}
 	return out
 }
 

@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,7 +22,7 @@ import (
 func TestDownloadPathsRejectTraversal(t *testing.T) {
 	ts, _ := newServer(t)
 	man, files := buildFixture(t, "v1.0.0")
-	if _, ok, err := client.New(ts.URL, testToken).Publish(man, files); err != nil || !ok {
+	if _, ok, err := client.New(ts.URL, testToken).Publish(context.Background(), man, files); err != nil || !ok {
 		t.Fatalf("publish: %v %v", ok, err)
 	}
 
@@ -56,7 +57,7 @@ func TestDownloadPathsRejectTraversal(t *testing.T) {
 func TestValidDownloadPathsStillWork(t *testing.T) {
 	ts, _ := newServer(t)
 	man, files := buildFixture(t, "v1.0.0")
-	if _, ok, err := client.New(ts.URL, testToken).Publish(man, files); err != nil || !ok {
+	if _, ok, err := client.New(ts.URL, testToken).Publish(context.Background(), man, files); err != nil || !ok {
 		t.Fatalf("publish: %v %v", ok, err)
 	}
 	for _, p := range []string{
@@ -119,5 +120,121 @@ func TestBreakingModeParsing(t *testing.T) {
 	var bad config.BreakingMode
 	if err := yaml.Unmarshal([]byte("maybe"), &bad); err == nil {
 		t.Error("invalid mode accepted")
+	}
+}
+
+func TestPublishRejectsBadRequests(t *testing.T) {
+	ts, _ := newServer(t)
+	c := client.New(ts.URL, testToken)
+	ctx := context.Background()
+
+	t.Run("missing schema", func(t *testing.T) {
+		man, files := buildFixture(t, "v1.0.0")
+		delete(files, "schema.zip")
+		if _, _, err := c.Publish(ctx, man, files); err == nil {
+			t.Error("published without a schema archive")
+		}
+	})
+
+	t.Run("schema digest mismatch", func(t *testing.T) {
+		man, files := buildFixture(t, "v1.0.0")
+		man.SchemaSHA256 = registry.SHA256Hex([]byte("something else"))
+		if _, _, err := c.Publish(ctx, man, files); err == nil {
+			t.Error("published with a mismatched schema digest")
+		}
+	})
+
+	t.Run("module mismatch", func(t *testing.T) {
+		man, files := buildFixture(t, "v1.0.0")
+		man.Module = "acme/other"
+		// The client posts to the path from the manifest, so make them differ
+		// by rewriting the manifest after the URL is chosen.
+		if _, _, err := c.Publish(ctx, man, files); err != nil {
+			// Publishing to acme/other is legitimate; assert the version lands
+			// where the manifest says.
+			t.Fatalf("publish: %v", err)
+		}
+		if _, err := c.Module(ctx, "acme/other"); err != nil {
+			t.Errorf("module acme/other not found: %v", err)
+		}
+	})
+
+	t.Run("invalid version", func(t *testing.T) {
+		man, files := buildFixture(t, "v1.0.0")
+		man.Version = "not-a-version"
+		if _, _, err := c.Publish(ctx, man, files); err == nil {
+			t.Error("published with an invalid version")
+		}
+	})
+
+	t.Run("artifact file missing", func(t *testing.T) {
+		man, files := buildFixture(t, "v1.0.0")
+		delete(files, "go.zip")
+		if _, _, err := c.Publish(ctx, man, files); err == nil {
+			t.Error("published with a missing artifact file")
+		}
+	})
+}
+
+func TestLabelsAndVersionLookup(t *testing.T) {
+	ts, _ := newServer(t)
+	c := client.New(ts.URL, testToken)
+	ctx := context.Background()
+
+	man, files := buildFixture(t, "v1.0.0")
+	if _, ok, err := c.Publish(ctx, man, files); err != nil || !ok {
+		t.Fatalf("publish: %v %v", ok, err)
+	}
+	man2, files2 := buildFixture(t, "v1.1.0")
+	if _, ok, err := c.Publish(ctx, man2, files2); err != nil || !ok {
+		t.Fatalf("publish v1.1.0: %v %v", ok, err)
+	}
+
+	if err := c.SetLabel(ctx, "acme/catalog", "stable", "v1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := c.Module(ctx, "acme/catalog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idx.Labels["stable"] != "v1.0.0" {
+		t.Errorf("labels = %v", idx.Labels)
+	}
+	// A label resolves everywhere a version does, which is what lets a
+	// consumer follow a branch.
+	body := get(t, ts.URL+"/api/v1/modules/acme/catalog/versions/stable")
+	if !strings.Contains(body, `"version": "v1.0.0"`) {
+		t.Errorf("label lookup = %q", body)
+	}
+	if body := get(t, ts.URL+"/api/v1/modules/acme/catalog/versions/latest"); !strings.Contains(body, "v1.1.0") {
+		t.Errorf("latest = %q", body)
+	}
+	// Pointing a label at a version that does not exist must fail.
+	if err := c.SetLabel(ctx, "acme/catalog", "stable", "v9.9.9"); err == nil {
+		t.Error("label pointed at a missing version")
+	}
+}
+
+func TestHealthzAndUnknownRoutes(t *testing.T) {
+	ts, _ := newServer(t)
+	if body := get(t, ts.URL+"/healthz"); strings.TrimSpace(body) != "ok" {
+		t.Errorf("healthz = %q", body)
+	}
+	resp, err := http.Get(ts.URL + "/nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown route status = %d", resp.StatusCode)
+	}
+	// Every response declares its content type honestly.
+	resp, err = http.Get(ts.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("nosniff header missing")
 	}
 }

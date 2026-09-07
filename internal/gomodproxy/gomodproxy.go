@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"strings"
@@ -98,7 +99,7 @@ func (h *Handler) serveList(w http.ResponseWriter, modPath string) {
 		if registry.IsPseudo(v.Version) {
 			continue
 		}
-		fmt.Fprintln(w, v.Version)
+		fmt.Fprintln(w, v.Version) //nolint:errcheck // a failed write means the client is gone
 	}
 }
 
@@ -163,7 +164,9 @@ func (h *Handler) serveMod(w http.ResponseWriter, modPath, escapedVersion string
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Write(gomod)
+	// The body is a go.mod file, served verbatim as the proxy protocol
+	// requires; the server sends X-Content-Type-Options: nosniff.
+	w.Write(gomod) //nolint:errcheck,gosec // verbatim go.mod, text/plain + nosniff
 }
 
 func (h *Handler) serveZip(w http.ResponseWriter, r *http.Request, modPath, escapedVersion string) {
@@ -214,15 +217,19 @@ type info struct {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	json.NewEncoder(w).Encode(v) //nolint:errcheck // a failed write means the client is gone
 }
 
 func writeErr(w http.ResponseWriter, err error) {
+	// The message can contain a module path taken from the URL, so it is
+	// escaped: http.Error sets a text content type, but a browser sniffing
+	// the body should still not find markup.
+	msg := html.EscapeString(err.Error())
 	if errors.Is(err, registry.ErrNotFound) {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		http.Error(w, msg, http.StatusNotFound)
 		return
 	}
-	http.Error(w, err.Error(), http.StatusInternalServerError)
+	http.Error(w, msg, http.StatusInternalServerError)
 }
 
 func cut(s, sep string) (before, after string, found bool) {

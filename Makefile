@@ -16,9 +16,13 @@ test: ## Run unit and integration tests
 e2e: ## Publish and install through real go and composer clients
 	./e2e/e2e.sh
 
-lint: ## Vet and format check
+lint: ## Vet, format check and golangci-lint
 	go vet ./...
 	@test -z "$$(gofmt -l . )" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+	@command -v golangci-lint >/dev/null && golangci-lint run ./... || 		echo "golangci-lint not installed, skipping (go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)"
+
+vuln: ## Check dependencies and stdlib for known vulnerabilities
+	govulncheck ./...
 
 fmt: ## Format
 	gofmt -w .

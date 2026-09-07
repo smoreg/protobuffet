@@ -3,6 +3,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,8 +49,8 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
-func (c *Client) getJSON(path string, out any) error {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL+path, nil)
+func (c *Client) getJSON(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return err
 	}
@@ -70,16 +71,16 @@ type ModuleSummary struct {
 }
 
 // ListModules returns every module in the registry.
-func (c *Client) ListModules() ([]ModuleSummary, error) {
+func (c *Client) ListModules(ctx context.Context) ([]ModuleSummary, error) {
 	var out []ModuleSummary
-	err := c.getJSON("/api/v1/modules", &out)
+	err := c.getJSON(ctx, "/api/v1/modules", &out)
 	return out, err
 }
 
 // Module returns a module index.
-func (c *Client) Module(name string) (*registry.Index, error) {
+func (c *Client) Module(ctx context.Context, name string) (*registry.Index, error) {
 	var out registry.Index
-	if err := c.getJSON("/api/v1/modules/"+name, &out); err != nil {
+	if err := c.getJSON(ctx, "/api/v1/modules/"+name, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -95,8 +96,8 @@ func (c *Client) SchemaURL(module, version string) string {
 }
 
 // DownloadSchema fetches a published schema archive.
-func (c *Client) DownloadSchema(module, version string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, c.SchemaURL(module, version), nil)
+func (c *Client) DownloadSchema(ctx context.Context, module, version string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.SchemaURL(module, version), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +112,7 @@ func (c *Client) DownloadSchema(module, version string) ([]byte, error) {
 // Publish uploads a version. A registry that refuses the push because it
 // breaks compatibility returns the report with ok=false rather than an error,
 // because that is a verdict, not a failure.
-func (c *Client) Publish(man api.PublishManifest, files map[string][]byte) (*api.PublishResponse, bool, error) {
+func (c *Client) Publish(ctx context.Context, man api.PublishManifest, files map[string][]byte) (*api.PublishResponse, bool, error) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 
@@ -135,7 +136,7 @@ func (c *Client) Publish(man api.PublishManifest, files map[string][]byte) (*api
 		return nil, false, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		fmt.Sprintf("%s/api/v1/modules/%s/versions", c.BaseURL, man.Module), &body)
 	if err != nil {
 		return nil, false, err
@@ -156,9 +157,12 @@ func (c *Client) Publish(man api.PublishManifest, files map[string][]byte) (*api
 }
 
 // SetLabel points a label at a version.
-func (c *Client) SetLabel(module, label, version string) error {
-	body, _ := json.Marshal(map[string]string{"version": version})
-	req, err := http.NewRequest(http.MethodPut,
+func (c *Client) SetLabel(ctx context.Context, module, label, version string) error {
+	body, err := json.Marshal(map[string]string{"version": version})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
 		fmt.Sprintf("%s/api/v1/modules/%s/labels/%s", c.BaseURL, module, label), bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -168,6 +172,5 @@ func (c *Client) SetLabel(module, label, version string) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
-	return nil
+	return resp.Body.Close()
 }
