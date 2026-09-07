@@ -126,8 +126,13 @@ func (s *Server) logging(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 
 		// A request id makes one publish traceable across the client log, the
-		// server log and whatever sits in front.
-		reqID := r.Header.Get("X-Request-Id")
+		// server log and whatever sits in front. An inbound id is only
+		// honoured behind a trusted proxy: otherwise a client could pick its
+		// own and make two unrelated requests look like one in the audit log.
+		reqID := ""
+		if s.cfg.TrustedProxy {
+			reqID = sanitizeHeader(r.Header.Get("X-Request-Id"))
+		}
 		if reqID == "" {
 			reqID = newRequestID()
 		}
@@ -144,7 +149,7 @@ func (s *Server) logging(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", rec.status,
 			"duration", elapsed.Round(time.Millisecond),
-			"remote", remoteAddr(r),
+			"remote", s.remoteAddr(r),
 		)
 	})
 }
@@ -200,11 +205,10 @@ func (s *Server) serveAudit(w http.ResponseWriter, r *http.Request) {
 
 // recordAudit writes one event, filling in what the request knows.
 func (s *Server) recordAudit(r *http.Request, e auditEvent) {
-	e.RequestID = r.Header.Get("X-Request-Id")
-	if e.RequestID == "" {
-		e.RequestID = requestIDFrom(r)
-	}
-	e.Remote = remoteAddr(r)
+	// The id assigned by the middleware, never the raw header: the audit log
+	// answers "who did this, from where", and a client must not author it.
+	e.RequestID = requestIDFrom(r)
+	e.Remote = s.remoteAddr(r)
 	if err := s.audit.record(e); err != nil {
 		// The action already happened; losing its audit line is worth a loud
 		// log, not a failed request.
@@ -263,16 +267,33 @@ func newRequestID() string {
 	return hex.EncodeToString(buf[:])
 }
 
-// remoteAddr prefers the forwarded address, since the server normally runs
-// behind a proxy.
-func remoteAddr(r *http.Request) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		if i := strings.IndexByte(v, ','); i > 0 {
-			return v[:i]
+// remoteAddr reports where a request came from. The forwarded header is only
+// read when a proxy is declared in front; taken from an arbitrary client it is
+// a free-text field that ends up in the audit log.
+func (s *Server) remoteAddr(r *http.Request) string {
+	if s.cfg.TrustedProxy {
+		if v := sanitizeHeader(r.Header.Get("X-Forwarded-For")); v != "" {
+			if i := strings.IndexByte(v, ','); i > 0 {
+				return strings.TrimSpace(v[:i])
+			}
+			return v
 		}
-		return v
 	}
 	return r.RemoteAddr
+}
+
+// sanitizeHeader keeps a header value printable and short, so a forged one
+// cannot inject newlines into a log line or bloat the audit file.
+func sanitizeHeader(v string) string {
+	if len(v) > 200 {
+		v = v[:200]
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(v))
 }
 
 type statusRecorder struct {
@@ -529,6 +550,12 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	schema, ok := files["schema.zip"]
 	if !ok {
 		http.Error(w, "schema.zip is required", http.StatusBadRequest)
+		return
+	}
+	// A version with no SDKs is downloadable by nobody; accepting it burns a
+	// version number that can never be republished.
+	if len(man.Artifacts) == 0 {
+		http.Error(w, "at least one artifact is required", http.StatusBadRequest)
 		return
 	}
 	if man.SchemaSHA256 != "" && man.SchemaSHA256 != registry.SHA256Hex(schema) {

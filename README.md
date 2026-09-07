@@ -179,7 +179,9 @@ gate.
 ## Limitations
 
 - One node. Storage is a directory; back it up and run a single instance.
-- Tokens are registry-wide (`read`, `write`, `admin`). No per-module access.
+- Tokens are registry-wide (`read`, `write`, `admin`). No per-module access:
+  any write token can publish under any module name and claim any free package
+  name, in every ecosystem the registry serves.
 - The registry does not host schema dependencies. `deps:` in `buf.yaml` still
   resolves through buf.build or vendored copies.
 - No generated documentation browser.

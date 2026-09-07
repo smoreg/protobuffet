@@ -24,6 +24,13 @@ func TestPseudoVersionMatchesGoFormat(t *testing.T) {
 	if !IsPseudo(v) {
 		t.Error("IsPseudo said no")
 	}
+	// A hand-written tag must not be mistaken for a generated version: that
+	// would hide it from @v/list and let retention delete it.
+	for _, tag := range []string{"v0.0.0-alpha-1", "v0.0.0-rc-2", "v1.0.0-20260907150405-abcdef012345", "v0.0.0-20260907150405-XYZ012345678"} {
+		if IsPseudo(tag) {
+			t.Errorf("IsPseudo(%q) = true", tag)
+		}
+	}
 	if _, err := PseudoVersion(time.Now(), "short"); err == nil {
 		t.Error("a short digest should be rejected")
 	}
@@ -48,9 +55,11 @@ func TestNormalizeVersion(t *testing.T) {
 
 func TestPythonVersionIsPEP440(t *testing.T) {
 	cases := map[string]string{
-		"v1.2.3":                             "1.2.3",
-		"v2.0.0-rc.1":                        "2.0.0rc1",
-		"v0.0.0-20260907150405-abcdef012345": "0.0.0.dev20260907150405",
+		"v1.2.3":      "1.2.3",
+		"v2.0.0-rc.1": "2.0.0rc1",
+		// The digest goes into the PEP 440 local segment, so two revisions in
+		// the same second do not produce one wheel name.
+		"v0.0.0-20260907150405-abcdef012345": "0.0.0.dev20260907150405+abcdef012345",
 	}
 	for in, want := range cases {
 		if got := PythonVersion(in); got != want {

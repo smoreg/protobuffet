@@ -8,6 +8,11 @@ data: "./data"
 # proxy rewrites the Host header, or when serving on a path prefix.
 base_url: ""
 
+# Believe X-Forwarded-For and X-Request-Id. Turn this on only when a proxy in
+# front sets them: from an arbitrary client both are free-text fields that end
+# up in the audit log.
+trusted_proxy: false
+
 # Anyone can read schemas and SDKs; publishing always needs a token.
 # Set to false for a fully private registry.
 public_read: true

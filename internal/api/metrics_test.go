@@ -2,12 +2,44 @@ package api_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/smoreg/protobuffet/internal/api"
 	"github.com/smoreg/protobuffet/internal/client"
+	"github.com/smoreg/protobuffet/internal/config"
+	"github.com/smoreg/protobuffet/internal/registry"
 )
+
+// trustedProxyServer runs a registry that believes forwarding headers.
+func trustedProxyServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	store, err := registry.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := registry.NewCatalog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultServer()
+	cfg.BaseURL = ""
+	cfg.BreakingCheck = config.BreakingOff
+	cfg.TrustedProxy = true
+	cfg.Tokens = []config.Token{{Subject: "t", SHA256: config.HashToken(testToken), Scopes: []string{"write"}}}
+
+	srv, err := api.New(cfg, catalog, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
 
 func TestMetricsEndpoint(t *testing.T) {
 	ts, _ := newServer(t)
@@ -48,20 +80,52 @@ func TestRequestIDIsEchoedAndGenerated(t *testing.T) {
 		t.Error("no request id generated")
 	}
 
+	// Without a declared proxy in front, an inbound id is ignored: a client
+	// could otherwise pick its own and make two unrelated requests look like
+	// one in the audit log.
 	req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("X-Request-Id", "from-the-proxy")
+	req.Header.Set("X-Request-Id", "forged-by-the-client")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	// A proxy that already assigned an id must see it preserved, otherwise
-	// the two logs cannot be joined.
+	if got := resp.Header.Get("X-Request-Id"); got == "forged-by-the-client" {
+		t.Error("an untrusted request id was echoed back")
+	}
+}
+
+func TestTrustedProxyHeadersAreHonouredWhenDeclared(t *testing.T) {
+	ts := trustedProxyServer(t)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Request-Id", "from-the-proxy")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	// With a proxy declared, its id is preserved so the two logs join up.
 	if got := resp.Header.Get("X-Request-Id"); got != "from-the-proxy" {
-		t.Errorf("request id = %q", got)
+		t.Errorf("request id = %q, want the proxy's", got)
+	}
+
+	// Control characters must not reach a log line.
+	req.Header.Set("X-Request-Id", "bad\nid")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		// Go's client refuses to send an invalid header, which is also fine.
+		return
+	}
+	resp.Body.Close()
+	if strings.Contains(resp.Header.Get("X-Request-Id"), "\n") {
+		t.Error("a newline survived into the request id")
 	}
 }
 

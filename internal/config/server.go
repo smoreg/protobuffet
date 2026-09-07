@@ -40,6 +40,11 @@ type Server struct {
 	MaxConcurrentPublishes int `yaml:"max_concurrent_publishes"`
 	// Retention prunes pseudo-versions, which accumulate one per CI push.
 	Retention Retention `yaml:"retention"`
+	// TrustedProxy says whether X-Forwarded-For and X-Request-Id may be
+	// believed. Off by default: without a proxy in front, both are attacker
+	// controlled, and an audit log that records forged origins is worse than
+	// one that records the socket.
+	TrustedProxy bool `yaml:"trusted_proxy"`
 	// TokensFile holds credentials separately from the rest of the config so
 	// they can be rotated without a restart (send SIGHUP) and mounted as a
 	// secret of their own.

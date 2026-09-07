@@ -139,6 +139,12 @@ tag on `HEAD`, or a generated pseudo-version
 `v0.0.0-<utc timestamp>-<first 12 hex of the schema digest>` — the exact shape
 the go command accepts.
 
+Pruned pseudo-versions are **removed**, not yanked: their files are deleted
+and a lock file pinning one stops resolving. That is the trade for not keeping
+every CI push forever, and it is why retention never touches a tagged version
+or one under a label. Pin a tag, not a pseudo-version, in anything that has to
+keep building.
+
 Published versions are immutable. Labels are not: `-label main` moves the
 label to the new version, which is how consumers follow a branch without
 depending on a moving version number.

@@ -96,7 +96,7 @@ func (h *Handler) servePackument(w http.ResponseWriter, name, base string) {
 		Versions: map[string]npmVersion{},
 		Time:     map[string]time.Time{},
 	}
-	var latest string
+	var newest, newestStable string
 	for _, m := range mods {
 		idx, err := h.Catalog.Index(m)
 		if err != nil {
@@ -126,14 +126,32 @@ func (h *Handler) servePackument(w http.ResponseWriter, name, base string) {
 			}
 			doc.Versions[a.Version] = nv
 			doc.Time[a.Version] = v.CreatedAt
-			latest = a.Version
+			// `npm install <pkg>` installs dist-tags.latest, so a prerelease
+			// there silently makes an RC the default for every consumer. Only
+			// fall back to one when there is no stable release at all.
+			if newest == "" || registry.CompareVersions("v"+a.Version, "v"+newest) > 0 {
+				newest = a.Version
+			}
+			if !isPrerelease(a.Version) &&
+				(newestStable == "" || registry.CompareVersions("v"+a.Version, "v"+newestStable) > 0) {
+				newestStable = a.Version
+			}
 		}
 	}
 	if len(doc.Versions) == 0 {
 		http.Error(w, fmt.Sprintf("npm package %q not found", name), http.StatusNotFound)
 		return
 	}
-	doc.DistTags["latest"] = latest
+	if newestStable != "" {
+		doc.DistTags["latest"] = newestStable
+	} else {
+		doc.DistTags["latest"] = newest
+	}
+	if newest != doc.DistTags["latest"] {
+		// npm convention: prereleases live under their own tag so they can be
+		// installed deliberately with @next.
+		doc.DistTags["next"] = newest
+	}
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -182,6 +200,11 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, rest stri
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Length", fmt.Sprint(size))
 	http.ServeContent(w, r, a.File, v.CreatedAt, f)
+}
+
+// isPrerelease reports whether a version carries a semver prerelease suffix.
+func isPrerelease(version string) bool {
+	return strings.Contains(version, "-")
 }
 
 // unescapeName turns "@scope%2fname" or "@scope/name" into "@scope/name".

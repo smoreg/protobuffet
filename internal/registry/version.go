@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -90,7 +91,13 @@ func PythonVersion(v string) string {
 	base := EcosystemVersion(v)
 	if IsPseudo(v) {
 		parts := strings.SplitN(base, "-", 3)
-		if len(parts) >= 2 {
+		if len(parts) >= 3 {
+			// The digest goes into the local version segment: two revisions
+			// pushed in the same second would otherwise produce one wheel
+			// name and collide on the index.
+			return parts[0] + ".dev" + parts[1] + "+" + parts[2]
+		}
+		if len(parts) == 2 {
 			return parts[0] + ".dev" + parts[1]
 		}
 	}
@@ -108,7 +115,10 @@ func CompareVersions(a, b string) int { return semver.Compare(a, b) }
 // a breaking change is allowed under the allow-major policy.
 func MajorOf(v string) string { return semver.Major(v) }
 
+// pseudoRe matches exactly what PseudoVersion produces. A looser check treats
+// a hand-written tag such as v0.0.0-alpha-1 as generated, which then hides it
+// from @v/list and lets retention delete it.
+var pseudoRe = regexp.MustCompile(`^v0\.0\.0-\d{14}-[0-9a-f]{12}$`)
+
 // IsPseudo reports whether a version was generated rather than tagged.
-func IsPseudo(v string) bool {
-	return strings.HasPrefix(v, "v0.0.0-") && strings.Count(v, "-") >= 2
-}
+func IsPseudo(v string) bool { return pseudoRe.MatchString(v) }

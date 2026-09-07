@@ -45,6 +45,18 @@ until 1.0 the API and the on-disk layout may still change between minors.
   serving versions whose files were gone. Collection now goes through
   `POST /api/v1/gc`.
 - Validation errors returned 500 instead of 400.
+- npm `dist-tags.latest` pointed at the highest version including prereleases,
+  so publishing an RC silently made it the default install for everyone.
+  Latest is now the newest stable release, with prereleases under `next`.
+- Python pseudo-versions dropped the commit digest, so two revisions in the
+  same second produced one wheel name. The digest moves to the PEP 440 local
+  segment.
+- A hand-written tag such as `v0.0.0-alpha-1` was mistaken for a generated
+  pseudo-version, which hid it from `@v/list` and exposed it to retention.
+- The audit log recorded `X-Forwarded-For` and `X-Request-Id` verbatim, so a
+  client could forge both. They are only believed behind `trusted_proxy`.
+- A publish carrying no artifacts was accepted, burning a version number on a
+  release nobody can install.
 - The container image no longer compiles buf from source: that needed more
   memory than a small runner has and failed the build.
 
