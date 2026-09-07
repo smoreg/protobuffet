@@ -5,3 +5,5 @@ coverage.out
 # local registry data and e2e scratch
 /data/
 /e2e/tmp/
+# local audit backlog, not part of the release
+/tasks/
