@@ -101,6 +101,7 @@ Versions follow PEP 440 rather than semver: `v1.2.3` becomes `1.2.3`,
 | `PUT` | `/api/v1/modules/{owner}/{name}/versions/{version}/yank` | admin |
 | `DELETE` | `/api/v1/modules/{owner}/{name}/versions/{version}/yank` | admin |
 | `GET` | `/api/v1/audit?limit=` | admin |
+| `POST` | `/api/v1/gc?dry_run=1` | admin |
 | `GET` | `/metrics` | read |
 | `GET` | `/healthz` | none |
 

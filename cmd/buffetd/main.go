@@ -31,6 +31,11 @@ func main() {
 // build wires the store, the catalog and the HTTP server together. It is
 // separate from run so tests can exercise it without signals or a listener.
 func build(cfg config.Server, log *slog.Logger) (*http.Server, *api.Server, error) {
+	// One writer per data directory, enforced across processes: a gc run
+	// against a live registry would otherwise interleave index rewrites.
+	if _, err := registry.LockStore(cfg.Data); err != nil {
+		return nil, nil, err
+	}
 	store, err := registry.NewStore(cfg.Data)
 	if err != nil {
 		return nil, nil, err
@@ -38,6 +43,10 @@ func build(cfg config.Server, log *slog.Logger) (*http.Server, *api.Server, erro
 	catalog, err := registry.NewCatalog(store)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load registry: %w", err)
+	}
+	for _, c := range catalog.Conflicts() {
+		log.Error("package name claimed by two modules; the earliest publisher keeps it",
+			"target", c.Target, "package", c.Name, "owner", c.Owner.String(), "other", c.Other.String())
 	}
 	srv, err := api.New(cfg, catalog, log)
 	if err != nil {
@@ -56,6 +65,13 @@ func build(cfg config.Server, log *slog.Logger) (*http.Server, *api.Server, erro
 // runGC prunes pseudo-versions and orphaned directories, then exits. Running
 // it as a CronJob keeps the volume from filling up with CI pushes.
 func runGC(cfg config.Server, log *slog.Logger, dryRun bool) error {
+	lock, err := registry.LockStore(cfg.Data)
+	if err != nil {
+		return fmt.Errorf("%w\n\nA running registry holds the lock. Collect through the API instead:\n"+
+			"  curl -X POST -H \"Authorization: Bearer $ADMIN\" $BASE_URL/api/v1/gc", err)
+	}
+	defer lock.Release() //nolint:errcheck // process is exiting
+
 	store, err := registry.NewStore(cfg.Data)
 	if err != nil {
 		return err

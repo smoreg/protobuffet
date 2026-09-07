@@ -106,6 +106,10 @@ func (s *Server) routes() {
 	})
 	s.mux.Handle("GET /metrics", read(http.HandlerFunc(s.serveMetrics)))
 	s.mux.Handle("GET /api/v1/audit", admin(s.serveAudit))
+	// Collecting through the API keeps it in the process that owns the data
+	// directory, so the in-memory catalog is refreshed and no second process
+	// competes for the lock.
+	s.mux.Handle("POST /api/v1/gc", admin(s.collectGarbage))
 	s.mux.Handle("GET /", read(http.HandlerFunc(s.ui)))
 }
 
@@ -143,6 +147,39 @@ func (s *Server) logging(next http.Handler) http.Handler {
 			"remote", remoteAddr(r),
 		)
 	})
+}
+
+// collectGarbage applies the retention policy in-process.
+func (s *Server) collectGarbage(w http.ResponseWriter, r *http.Request) {
+	dryRun := r.URL.Query().Get("dry_run") == "1"
+	pruned, err := s.catalog.PrunePseudoVersions(registry.PruneOptions{
+		KeepNewest: s.cfg.Retention.KeepPseudoVersions,
+		MaxAge:     time.Duration(s.cfg.Retention.KeepPseudoDays) * 24 * time.Hour,
+		DryRun:     dryRun,
+	})
+	if err != nil {
+		httpError(w, err)
+		return
+	}
+	type entry struct {
+		Module  string `json:"module"`
+		Version string `json:"version"`
+		Reason  string `json:"reason"`
+	}
+	out := make([]entry, 0, len(pruned))
+	for _, p := range pruned {
+		out = append(out, entry{Module: p.Module.String(), Version: p.Version, Reason: p.Reason})
+	}
+	if !dryRun && len(pruned) > 0 {
+		s.recordAudit(r, auditEvent{
+			Subject: subjectOf(r), Action: "gc", Result: "ok",
+			Detail: fmt.Sprintf("pruned %d pseudo-versions", len(pruned)),
+		})
+	}
+	writeJSON(w, http.StatusOK, struct {
+		DryRun bool    `json:"dry_run"`
+		Pruned []entry `json:"pruned"`
+	}{DryRun: dryRun, Pruned: out})
 }
 
 // serveAudit returns the tail of the audit log, newest first.
@@ -684,9 +721,11 @@ func httpError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, registry.ErrNotFound):
 		http.Error(w, err.Error(), http.StatusNotFound)
-	case errors.Is(err, registry.ErrVersionExists):
+	case errors.Is(err, registry.ErrVersionExists), errors.Is(err, registry.ErrNameTaken):
 		http.Error(w, err.Error(), http.StatusConflict)
-	case errors.Is(err, registry.ErrDigestMismatch):
+	case errors.Is(err, registry.ErrDigestMismatch), errors.Is(err, registry.ErrInvalid):
+		// Bad input is the caller's problem; answering 500 sends them looking
+		// at our logs for a fault that is in their request.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	default:
 		http.Error(w, err.Error(), http.StatusInternalServerError)

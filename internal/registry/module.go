@@ -36,10 +36,10 @@ type Module struct {
 func ParseModule(s string) (Module, error) {
 	owner, name, ok := strings.Cut(s, "/")
 	if !ok {
-		return Module{}, fmt.Errorf("module %q: want owner/name", s)
+		return Module{}, fmt.Errorf("module %q: want owner/name: %w", s, ErrInvalid)
 	}
 	if !nameRe.MatchString(owner) || !nameRe.MatchString(name) {
-		return Module{}, fmt.Errorf("module %q: each part must match %s", s, nameRe)
+		return Module{}, fmt.Errorf("module %q: each part must match %s: %w", s, nameRe, ErrInvalid)
 	}
 	return Module{Owner: owner, Name: name}, nil
 }

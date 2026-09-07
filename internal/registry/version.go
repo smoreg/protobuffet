@@ -25,18 +25,18 @@ func PseudoVersion(t time.Time, digest string) (string, error) {
 // v-prefixed form used everywhere in the registry.
 func NormalizeVersion(s string) (string, error) {
 	if s == "" {
-		return "", fmt.Errorf("empty version")
+		return "", fmt.Errorf("empty version: %w", ErrInvalid)
 	}
 	if !strings.HasPrefix(s, "v") {
 		s = "v" + s
 	}
 	if !semver.IsValid(s) {
-		return "", fmt.Errorf("version %q is not valid semver", s)
+		return "", fmt.Errorf("version %q is not valid semver: %w", s, ErrInvalid)
 	}
 	// x/mod/semver accepts the shorthands v1 and v1.2; a registry version has
 	// to be complete, because that is what ends up in a consumer's lock file.
 	if semver.Canonical(s) != s {
-		return "", fmt.Errorf("version %q must be vMAJOR.MINOR.PATCH", s)
+		return "", fmt.Errorf("version %q must be vMAJOR.MINOR.PATCH: %w", s, ErrInvalid)
 	}
 	return s, nil
 }

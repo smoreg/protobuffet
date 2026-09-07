@@ -117,8 +117,13 @@ registry last in the list.
 ## Operations
 
 - **Single writer.** `replicas: 1` with `strategy: Recreate`. The volume is
-  ReadWriteOnce and the store is single-writer; scaling out needs the S3
-  backend that does not exist yet.
+  ReadWriteOnce and the store is single-writer, now enforced by an exclusive
+  lock on the data directory: a second process refuses to start rather than
+  corrupting the index. Scaling out needs the S3 backend that does not exist
+  yet.
+- **Garbage collection** runs through `POST /api/v1/gc` while the registry is
+  up. A CronJob calling the endpoint works; a CronJob running `buffetd -gc`
+  against the live volume does not, and will say so.
 - **Backups.** The PVC is the entire registry. Snapshot it, or run a CronJob
   that tars `/data` to object storage. Versions are immutable, so incremental
   backups only grow.

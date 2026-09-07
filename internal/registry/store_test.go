@@ -172,21 +172,6 @@ func TestOpenRejectsPathTraversal(t *testing.T) {
 	}
 }
 
-func TestFindByTarget(t *testing.T) {
-	s, _ := NewStore(t.TempDir())
-	publish(t, s, "v1.0.0", []byte("a"))
-	mod, idx, err := s.FindByTarget(TargetGo, "example.com/gen/go/acme/catalog")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mod.String() != "acme/catalog" || len(idx.Versions) != 1 {
-		t.Fatalf("found %s with %d versions", mod, len(idx.Versions))
-	}
-	if _, _, err := s.FindByTarget(TargetGo, "example.com/nope"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
-}
-
 func TestParseModuleRejectsBadNames(t *testing.T) {
 	for _, bad := range []string{"", "acme", "acme/", "/catalog", "ACME/catalog", "acme/../etc", "acme/cat alog"} {
 		if _, err := ParseModule(bad); err == nil {

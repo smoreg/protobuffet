@@ -334,3 +334,92 @@ func rebuildForModule(t *testing.T, man *api.PublishManifest, files map[string][
 		man.Artifacts[j].SHA256 = ""
 	}
 }
+
+func TestValidationErrorsAnswer400(t *testing.T) {
+	ts, _ := newServer(t)
+	man, files := buildFixture(t, "v1.0.0")
+	if _, ok, err := client.New(ts.URL, testToken).Publish(context.Background(), man, files); err != nil || !ok {
+		t.Fatalf("publish: %v %v", ok, err)
+	}
+
+	// Bad input is the caller's problem. Answering 500 sends them reading our
+	// logs for a fault that is in their request.
+	cases := []struct {
+		name, method, path, body string
+		want                     int
+	}{
+		{"reserved label", http.MethodPut, "/api/v1/modules/acme/catalog/labels/latest", `{"version":"v1.0.0"}`, http.StatusBadRequest},
+		{"version-shaped label", http.MethodPut, "/api/v1/modules/acme/catalog/labels/v2.0.0", `{"version":"v1.0.0"}`, http.StatusBadRequest},
+		{"label with spaces", http.MethodPut, "/api/v1/modules/acme/catalog/labels/not%20valid", `{"version":"v1.0.0"}`, http.StatusBadRequest},
+		{"bad version in label body", http.MethodPut, "/api/v1/modules/acme/catalog/labels/stable", `{"version":"nonsense"}`, http.StatusBadRequest},
+		{"label a missing version", http.MethodPut, "/api/v1/modules/acme/catalog/labels/stable", `{"version":"v9.9.9"}`, http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		req, err := http.NewRequest(tc.method, ts.URL+tc.path, strings.NewReader(tc.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s: status %d, want %d: %s", tc.name, resp.StatusCode, tc.want, body)
+		}
+	}
+}
+
+func TestGarbageCollectionThroughTheAPI(t *testing.T) {
+	ts := gateServer(t, "exit 0\n", config.BreakingOff, config.PolicyStrict)
+	admin := client.New(ts.URL, "admin-token")
+	ctx := context.Background()
+
+	// Two pseudo-versions; retention keeps one.
+	for _, v := range []string{"v0.0.0-20260101000000-aaaaaaaaaaaa", "v0.0.0-20260901000000-bbbbbbbbbbbb"} {
+		man, files := buildFixture(t, v)
+		if _, ok, err := admin.Publish(ctx, man, files); err != nil || !ok {
+			t.Fatalf("publish %s: %v %v", v, ok, err)
+		}
+	}
+
+	post := func(path string) string {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, ts.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer admin-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST %s: status %d: %s", path, resp.StatusCode, body)
+		}
+		return string(body)
+	}
+
+	if out := post("/api/v1/gc?dry_run=1"); !strings.Contains(out, `"dry_run": true`) {
+		t.Errorf("dry run response = %s", out)
+	}
+	// Nothing pruned yet, because the default retention keeps 0 (unset).
+	post("/api/v1/gc")
+
+	// A write token must not be able to collect.
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/gc", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("gc with a write token: status %d, want 403", resp.StatusCode)
+	}
+}

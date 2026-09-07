@@ -9,9 +9,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/smoreg/protobuffet/internal/pkgname"
 )
 
 // WheelMeta is the metadata that ends up in a wheel's dist-info directory.
@@ -24,19 +25,14 @@ type WheelMeta struct {
 	License        string
 }
 
-var nameSeparators = regexp.MustCompile(`[-_.]+`)
-
 // NormalizePythonName applies PEP 503 normalization, which is what pip uses to
-// match a requested package against an index.
-func NormalizePythonName(name string) string {
-	return strings.ToLower(nameSeparators.ReplaceAllString(name, "-"))
-}
+// match a requested package against an index. The registry tracks ownership
+// under the same rule, so the two cannot disagree.
+func NormalizePythonName(name string) string { return pkgname.NormalizePython(name) }
 
 // wheelDistribution is the escaped name used inside wheel filenames (PEP 427):
 // like the normalized name, but with underscores.
-func wheelDistribution(name string) string {
-	return strings.ReplaceAll(NormalizePythonName(name), "-", "_")
-}
+func wheelDistribution(name string) string { return pkgname.WheelDistribution(name) }
 
 // WheelFilename returns the canonical file name for a pure-Python wheel.
 func WheelFilename(name, version string) string {

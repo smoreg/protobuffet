@@ -134,13 +134,28 @@ retention:
   keep_pseudo_days: 90
 ```
 
+While the registry is running, collect through the API. The data directory
+takes an exclusive lock for the life of the process, so a second `buffetd -gc`
+against the same volume refuses to start rather than interleaving its index
+rewrites with a publish:
+
 ```sh
-buffetd -gc -dry-run    # report what would go
-buffetd -gc             # prune, then remove orphaned directories
+curl -X POST -H "Authorization: Bearer $ADMIN" https://schemas.example.com/api/v1/gc?dry_run=1
+curl -X POST -H "Authorization: Bearer $ADMIN" https://schemas.example.com/api/v1/gc
 ```
 
-Tagged versions and anything a label points at are never pruned. Run it as a
-CronJob against the same volume, or as a sidecar `kubectl exec`.
+Running in-process also refreshes the in-memory catalog; an external run would
+leave the server serving versions whose files are gone.
+
+With the registry stopped, the CLI does the same work and additionally removes
+orphaned directories:
+
+```sh
+buffetd -gc -dry-run
+buffetd -gc
+```
+
+Tagged versions and anything a label points at are never pruned.
 
 ## Audit log
 

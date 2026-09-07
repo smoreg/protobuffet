@@ -31,6 +31,20 @@ until 1.0 the API and the on-disk layout may still change between minors.
 
 ### Fixed
 
+- Two concurrent publishes could both claim the same package name: the check
+  released its lock before writing, so the collision only surfaced at the next
+  restart, where it stopped the registry from starting at all. Names are now
+  reserved atomically, and a conflict already on disk is logged instead of
+  refusing to start.
+- Python package ownership was tracked under the raw name while pip matches
+  the PEP 503 normalized one, so `Acme.Catalog_Proto` could shadow
+  `acme-catalog-proto` published by another module. Composer and npm names are
+  now compared case-insensitively for the same reason.
+- The data directory takes an exclusive lock: `buffetd -gc` against a running
+  registry used to interleave index writes and leave the in-memory catalog
+  serving versions whose files were gone. Collection now goes through
+  `POST /api/v1/gc`.
+- Validation errors returned 500 instead of 400.
 - The container image no longer compiles buf from source: that needed more
   memory than a small runner has and failed the build.
 

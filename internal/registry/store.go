@@ -20,7 +20,10 @@ import (
 
 // Errors returned by Store, meant to be mapped onto HTTP status codes by callers.
 var (
-	ErrNotFound       = errors.New("not found")
+	ErrNotFound = errors.New("not found")
+	// ErrInvalid marks input the caller got wrong, so handlers can answer 400
+	// instead of blaming themselves with a 500.
+	ErrInvalid        = errors.New("invalid input")
 	ErrVersionExists  = errors.New("version already published with different content")
 	ErrDigestMismatch = errors.New("artifact digest mismatch")
 )
@@ -334,13 +337,13 @@ var labelRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // is supposed to point at.
 func ValidateLabel(label string) error {
 	if !labelRe.MatchString(label) {
-		return fmt.Errorf("label %q: must match %s", label, labelRe)
+		return fmt.Errorf("label %q: must match %s: %w", label, labelRe, ErrInvalid)
 	}
 	if label == "latest" {
-		return fmt.Errorf("label %q is reserved", label)
+		return fmt.Errorf("label %q is reserved: %w", label, ErrInvalid)
 	}
 	if _, err := NormalizeVersion(label); err == nil {
-		return fmt.Errorf("label %q looks like a version, which would shadow it", label)
+		return fmt.Errorf("label %q looks like a version, which would shadow it: %w", label, ErrInvalid)
 	}
 	return nil
 }
@@ -354,6 +357,14 @@ func (s *Store) SetLabel(m Module, label, version string) error {
 	mu.Lock()
 	defer mu.Unlock()
 
+	// Normalize first: an unparseable version is bad input, not a missing
+	// one, and answering "not found" sends the caller looking for a version
+	// that could never have existed.
+	normalized, err := NormalizeVersion(version)
+	if err != nil {
+		return err
+	}
+	version = normalized
 	idx, err := s.Index(m)
 	if err != nil {
 		return err
@@ -484,70 +495,6 @@ func (s *Store) ReadAll(m Module, version, file string) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(f)
-}
-
-// FindByTarget locates the module and version that published an artifact under
-// the given ecosystem name, for example a Go module path. Registries are
-// addressed by package name, not by module name, so the lookup has to go the
-// other way round.
-func (s *Store) FindByTarget(t Target, name string) (Module, *Index, error) {
-	mods, err := s.ListModules()
-	if err != nil {
-		return Module{}, nil, err
-	}
-	for _, m := range mods {
-		idx, err := s.Index(m)
-		if err != nil {
-			continue
-		}
-		for _, v := range idx.Versions {
-			if a, ok := v.Artifact(t); ok && a.Name == name {
-				return m, idx, nil
-			}
-		}
-	}
-	return Module{}, nil, fmt.Errorf("%s package %q: %w", t, name, ErrNotFound)
-}
-
-// CleanOrphans removes version directories that no index references, and
-// leftover staging directories. Returns the paths removed.
-func (s *Store) CleanOrphans() ([]string, error) {
-	mods, err := s.ListModules()
-	if err != nil {
-		return nil, err
-	}
-	var removed []string
-	for _, m := range mods {
-		mu := s.lock(m)
-		mu.Lock()
-		idx, err := s.Index(m)
-		if err != nil {
-			mu.Unlock()
-			return removed, err
-		}
-		known := map[string]bool{}
-		for _, v := range idx.Versions {
-			known[v.Version] = true
-		}
-		entries, err := os.ReadDir(filepath.Join(s.moduleDir(m), "versions"))
-		if err != nil && !os.IsNotExist(err) {
-			mu.Unlock()
-			return removed, err
-		}
-		for _, e := range entries {
-			if !e.IsDir() || known[e.Name()] {
-				continue
-			}
-			path := filepath.Join(s.moduleDir(m), "versions", e.Name())
-			if err := os.RemoveAll(path); err != nil {
-				mu.Unlock()
-				return removed, err
-			}
-			removed = append(removed, path)
-		}
-		mu.Unlock()
-	}
-	return removed, nil
 }
 
 func writeFileAtomic(path string, body []byte) error {

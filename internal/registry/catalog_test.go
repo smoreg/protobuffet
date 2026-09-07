@@ -3,6 +3,7 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -56,11 +57,12 @@ func TestCatalogRefusesPackageNameOwnedByAnotherModule(t *testing.T) {
 	}
 }
 
-func TestCatalogStartupDetectsConflicts(t *testing.T) {
+func TestCatalogStartsDespiteConflictsOnDisk(t *testing.T) {
 	store, _ := NewStore(t.TempDir())
-	// Two modules with the same npm name, written straight to the store, as a
-	// registry created before ownership checks existed would look.
-	for _, mod := range []string{"acme/one", "acme/two"} {
+	// Two modules claiming one npm name, written straight to the store: a
+	// registry from before ownership checks, or a partial restore.
+	base := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	for i, mod := range []string{"acme/two", "acme/one"} {
 		m, _ := ParseModule(mod)
 		if _, err := store.Publish(PublishRequest{
 			Module:    m,
@@ -68,12 +70,112 @@ func TestCatalogStartupDetectsConflicts(t *testing.T) {
 			SchemaZip: []byte(mod),
 			Artifacts: []Artifact{{Target: TargetNPM, Name: "@acme/shared", Version: "1.0.0", File: "npm.tgz"}},
 			Files:     map[string][]byte{"npm.tgz": []byte(mod)},
+			// acme/two published first, so it keeps the name.
+			Now: base.Add(time.Duration(i) * time.Hour),
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := NewCatalog(store); !errors.Is(err, ErrNameTaken) {
-		t.Fatalf("startup err = %v, want ErrNameTaken", err)
+	// Refusing to start would leave the operator with no API to fix it, and a
+	// conflict is data, not a code failure.
+	c, err := NewCatalog(store)
+	if err != nil {
+		t.Fatalf("startup failed on a conflicting store: %v", err)
+	}
+	conflicts := c.Conflicts()
+	if len(conflicts) != 1 || conflicts[0].Name != "@acme/shared" {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	// The winner is the earliest publisher, not whoever the filesystem
+	// happened to return first.
+	if conflicts[0].Owner.String() != "acme/two" {
+		t.Errorf("owner = %s, want acme/two", conflicts[0].Owner)
+	}
+	owner, _, err := c.FindByTarget(TargetNPM, "@acme/shared")
+	if err != nil || owner.String() != "acme/two" {
+		t.Errorf("FindByTarget = %s, %v", owner, err)
+	}
+	// A third module still cannot take the name.
+	if _, err := publishTo(t, c, "acme/three", "v1.0.0",
+		Artifact{Target: TargetNPM, Name: "@acme/shared", Version: "1.0.0", File: "npm.tgz"}); !errors.Is(err, ErrNameTaken) {
+		t.Errorf("publish under a conflicted name = %v", err)
+	}
+}
+
+func TestPythonNamesCannotBeClaimedTwice(t *testing.T) {
+	store, _ := NewStore(t.TempDir())
+	c, _ := NewCatalog(store)
+
+	if _, err := publishTo(t, c, "team1/svc", "v1.0.0",
+		Artifact{Target: TargetPython, Name: "acme-catalog-proto", Version: "1.0.0", File: "python.whl"}); err != nil {
+		t.Fatal(err)
+	}
+	// pip normalizes per PEP 503, so these are the same project. Tracking
+	// ownership under the raw name would let another module publish wheels
+	// onto the same index page and shadow the original with a higher version.
+	for _, alias := range []string{"Acme.Catalog.Proto", "acme_catalog_proto", "ACME-CATALOG-PROTO"} {
+		_, err := publishTo(t, c, "team2/evil", "v9.9.9",
+			Artifact{Target: TargetPython, Name: alias, Version: "9.9.9", File: "python.whl"})
+		if !errors.Is(err, ErrNameTaken) {
+			t.Errorf("alias %q was accepted: %v", alias, err)
+		}
+	}
+	// Composer and npm match case-insensitively too.
+	if _, err := publishTo(t, c, "team1/svc", "v1.1.0",
+		Artifact{Target: TargetComposer, Name: "acme/catalog-proto", Version: "1.1.0", File: "composer.zip"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publishTo(t, c, "team2/evil", "v1.0.0",
+		Artifact{Target: TargetComposer, Name: "Acme/Catalog-Proto", Version: "1.0.0", File: "composer.zip"}); !errors.Is(err, ErrNameTaken) {
+		t.Errorf("composer name taken with different case: %v", err)
+	}
+}
+
+func TestConcurrentPublishesCannotBothClaimAName(t *testing.T) {
+	store, _ := NewStore(t.TempDir())
+	c, _ := NewCatalog(store)
+
+	// Both goroutines race for one npm name. Exactly one must win, and the
+	// store must be loadable afterwards: checking ownership and then dropping
+	// the lock before writing let both through, and the registry only found
+	// out at the next restart.
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	for i, mod := range []string{"team1/m", "team2/m"} {
+		wg.Add(1)
+		go func(i int, mod string) {
+			defer wg.Done()
+			m, _ := ParseModule(mod)
+			_, err := c.Publish(PublishRequest{
+				Module:    m,
+				Version:   "v1.0.0",
+				SchemaZip: []byte(mod),
+				Artifacts: []Artifact{{Target: TargetComposer, Name: "shared/pkg", Version: "1.0.0", File: "composer.zip"}},
+				Files:     map[string][]byte{"composer.zip": []byte(mod)},
+			})
+			results[i] = err
+		}(i, mod)
+	}
+	wg.Wait()
+
+	failures := 0
+	for _, err := range results {
+		if err != nil {
+			failures++
+			if !errors.Is(err, ErrNameTaken) {
+				t.Errorf("unexpected failure: %v", err)
+			}
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("%d of 2 concurrent publishes failed, want exactly 1", failures)
+	}
+	fresh, err := NewCatalog(store)
+	if err != nil {
+		t.Fatalf("store is unloadable after the race: %v", err)
+	}
+	if got := fresh.Conflicts(); len(got) != 0 {
+		t.Errorf("conflicts on disk after the race: %+v", got)
 	}
 }
 
@@ -179,5 +281,37 @@ func TestMajorOf(t *testing.T) {
 		if got := MajorOf(in); got != want {
 			t.Errorf("MajorOf(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestStoreLockIsExclusive(t *testing.T) {
+	dir := t.TempDir()
+	first, err := LockStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A gc run against a live registry's volume would otherwise interleave
+	// index rewrites with a publish and lose one of them.
+	if _, err := LockStore(dir); err == nil {
+		t.Fatal("a second process took the lock")
+	}
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := LockStore(dir)
+	if err != nil {
+		t.Fatalf("lock not released: %v", err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatal(err)
+	}
+	// Releasing twice, or releasing a nil lock, must not panic: both happen
+	// on shutdown paths.
+	if err := second.Release(); err == nil {
+		t.Log("double release returned no error, which is acceptable")
+	}
+	var nilLock *Lock
+	if err := nilLock.Release(); err != nil {
+		t.Errorf("nil release = %v", err)
 	}
 }
