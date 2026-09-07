@@ -26,6 +26,8 @@ go build -o "$TMP/buffet" ./cmd/buffet
 go build -o "$TMP/buffetd" ./cmd/buffetd
 command -v protoc-gen-go >/dev/null || go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
 command -v buf >/dev/null || { echo "buf is required: go install github.com/bufbuild/buf/cmd/buf@latest"; exit 1; }
+# The example generates PHP through protoc_builtin, which drives protoc.
+command -v protoc >/dev/null || { echo "protoc is required for the PHP target: install protobuf-compiler"; exit 1; }
 
 step "start registry"
 BUFFET_ADMIN_TOKEN="$TOKEN" "$TMP/buffetd" -listen "127.0.0.1:${PORT}" -data "$TMP/data" &

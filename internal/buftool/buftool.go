@@ -49,6 +49,12 @@ func (b *Buf) run(ctx context.Context, dir string, args ...string) (string, erro
 	err := cmd.Run()
 	combined := strings.TrimSpace(out.String() + "\n" + errBuf.String())
 	if err != nil {
+		// buf reports a missing protoc as a plugin failure, which reads like a
+		// bug in the template rather than a missing tool.
+		if strings.Contains(combined, `exec: "protoc"`) {
+			return combined, fmt.Errorf("buf %s: protoc is not installed, and this template uses protoc_builtin "+
+				"(install protobuf-compiler, or switch the plugin to a standalone one): %w", strings.Join(args, " "), err)
+		}
 		return combined, fmt.Errorf("buf %s: %w\n%s", strings.Join(args, " "), err, combined)
 	}
 	return combined, nil

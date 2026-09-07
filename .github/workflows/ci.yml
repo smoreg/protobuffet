@@ -30,10 +30,12 @@ jobs:
         with:
           php-version: "8.2"
           tools: composer
-      - name: install buf and protoc-gen-go
+      - name: install toolchain
         run: |
           go install github.com/bufbuild/buf/cmd/buf@v1.72.0
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          # protoc_builtin: php in the example template drives protoc directly
+          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
       - name: publish and consume through real package managers
         run: ./e2e/e2e.sh
 

@@ -1,5 +1,9 @@
 # protobuffet
 
+<p align="center">
+  <img src="assets/mascot.jpg" alt="A gopher serving schema packages from a buffet counter" width="300">
+</p>
+
 A self-hosted registry for Protobuf schemas that serves generated SDKs as
 **native packages**: a Go module proxy, a Composer repository and an npm
 registry, all from one binary and one directory of files.
@@ -135,6 +139,13 @@ targets:
 A complete, working example is in [`examples/catalog`](examples/catalog), and
 it uses **local** generation plugins — no hosted plugin service, no network
 beyond your own registry.
+
+Two things that cost people an afternoon:
+
+- PHP generation goes through `protoc_builtin: php`, which needs the `protoc`
+  binary on PATH. Go and TypeScript plugins are standalone binaries and do not.
+- `targets.go.module` must match the `go_package_prefix` in the generation
+  template, or consumers will import a path the registry does not serve.
 
 ## Server configuration
 
