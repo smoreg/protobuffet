@@ -1,0 +1,26 @@
+# protobuffet server configuration. Every field has a default, so the shortest
+# working deployment is no file at all plus BUFFET_ADMIN_TOKEN in the env.
+
+listen: ":8080"
+data: "./data"
+
+# Leave empty to derive download URLs from the incoming request. Set it when a
+# proxy rewrites the Host header, or when serving on a path prefix.
+base_url: ""
+
+# Anyone can read schemas and SDKs; publishing always needs a token.
+# Set to false for a fully private registry.
+public_read: true
+
+# Refuse pushes that break wire compatibility with the latest version.
+# Requires the buf binary on PATH (it ships in the container image).
+breaking_check: true
+
+# Mint credentials with: buffet token
+tokens:
+  - subject: ci
+    sha256: "replace-me-with-the-digest-buffet-token-prints"
+    scopes: [write]
+  - subject: developer
+    sha256: "another-digest"
+    scopes: [read]

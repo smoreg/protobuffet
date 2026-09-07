@@ -1,0 +1,25 @@
+# protobuffet module config: what to publish, and as what.
+version: v1
+module: acme/catalog
+proto: proto
+
+targets:
+  go:
+    module: registry.example.com/gen/go/acme/catalog
+    template: buf.gen.go.yaml
+    out: gen/go
+    go_version: "1.21"
+    require:
+      - google.golang.org/protobuf v1.36.12
+
+  composer:
+    package: acme/catalog-proto
+    template: buf.gen.php.yaml
+    out: gen/php
+    license: Apache-2.0
+    require:
+      php: ">=8.1"
+      google/protobuf: "^4.29"
+    autoload:
+      classmap:
+        - "."

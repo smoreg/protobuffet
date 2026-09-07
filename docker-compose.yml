@@ -1,0 +1,18 @@
+services:
+  registry:
+    build: .
+    image: ghcr.io/smoreg/protobuffet:latest
+    ports:
+      - "8080:8080"
+    environment:
+      # Generate one with: buffet token
+      BUFFET_ADMIN_TOKEN: ${BUFFET_ADMIN_TOKEN:?set BUFFET_ADMIN_TOKEN}
+      # Set when the registry is reachable under a different name than the
+      # request Host, for example behind a proxy that rewrites it.
+      BUFFET_BASE_URL: ${BUFFET_BASE_URL:-}
+    volumes:
+      - registry-data:/data
+    restart: unless-stopped
+
+volumes:
+  registry-data:

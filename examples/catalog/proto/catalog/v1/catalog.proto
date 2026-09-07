@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package catalog.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// php_namespace keeps the generated PHP classes PSR-4 friendly. go_package is
+// not set here: managed mode in buf.gen.go.yaml provides it, so the schema
+// stays independent of any one consumer's module layout.
+option php_namespace = "Acme\\Catalog\\V1";
+option php_metadata_namespace = "Acme\\Catalog\\V1\\Meta";
+
+service CatalogService {
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse);
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse);
+}
+
+message Product {
+  string id = 1;
+  string sku = 2;
+  string title = 3;
+  // Money is an integer in minor units. Floating point prices are a bug that
+  // accountants find before tests do.
+  int64 price_minor = 4;
+  string currency = 5;
+  ProductStatus status = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+enum ProductStatus {
+  // proto3 cannot tell "unset" from the first enum value, so zero is reserved.
+  PRODUCT_STATUS_UNSPECIFIED = 0;
+  PRODUCT_STATUS_DRAFT = 1;
+  PRODUCT_STATUS_ACTIVE = 2;
+  PRODUCT_STATUS_ARCHIVED = 3;
+}
+
+message GetProductRequest {
+  string id = 1;
+}
+
+message GetProductResponse {
+  Product product = 1;
+}
+
+message ListProductsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+  ProductStatus status = 3;
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  string next_page_token = 2;
+}

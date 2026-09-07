@@ -1,0 +1,7 @@
+/bin/
+/dist/
+*.test
+coverage.out
+# local registry data and e2e scratch
+/data/
+/e2e/tmp/

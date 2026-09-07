@@ -1,0 +1,173 @@
+// Package client talks to a protobuffet registry over HTTP.
+package client
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/smoreg/protobuffet/internal/api"
+	"github.com/smoreg/protobuffet/internal/registry"
+)
+
+// Client is a registry API client.
+type Client struct {
+	BaseURL string
+	Token   string
+	HTTP    *http.Client
+}
+
+// New builds a client against a registry root URL.
+func New(baseURL, token string) *Client {
+	return &Client{
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		Token:   token,
+		HTTP:    &http.Client{Timeout: 2 * time.Minute},
+	}
+}
+
+func (c *Client) do(req *http.Request) (*http.Response, error) {
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusConflict {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return nil, fmt.Errorf("%s %s: %s: %s", req.Method, req.URL.Path, resp.Status, strings.TrimSpace(string(body)))
+	}
+	return resp, nil
+}
+
+func (c *Client) getJSON(path string, out any) error {
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// ModuleSummary is one row of the module listing.
+type ModuleSummary struct {
+	Module   string    `json:"module"`
+	Versions int       `json:"versions"`
+	Latest   string    `json:"latest"`
+	Updated  time.Time `json:"updated"`
+}
+
+// ListModules returns every module in the registry.
+func (c *Client) ListModules() ([]ModuleSummary, error) {
+	var out []ModuleSummary
+	err := c.getJSON("/api/v1/modules", &out)
+	return out, err
+}
+
+// Module returns a module index.
+func (c *Client) Module(name string) (*registry.Index, error) {
+	var out registry.Index
+	if err := c.getJSON("/api/v1/modules/"+name, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SchemaURL is the address buf can read a published schema archive from,
+// suitable for `buf breaking --against`.
+func (c *Client) SchemaURL(module, version string) string {
+	if version == "" {
+		version = "latest"
+	}
+	return fmt.Sprintf("%s/api/v1/modules/%s/versions/%s/schema.zip", c.BaseURL, module, url.PathEscape(version))
+}
+
+// DownloadSchema fetches a published schema archive.
+func (c *Client) DownloadSchema(module, version string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, c.SchemaURL(module, version), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return io.ReadAll(resp.Body)
+}
+
+// Publish uploads a version. A registry that refuses the push because it
+// breaks compatibility returns the report with ok=false rather than an error,
+// because that is a verdict, not a failure.
+func (c *Client) Publish(man api.PublishManifest, files map[string][]byte) (*api.PublishResponse, bool, error) {
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+
+	manifestJSON, err := json.Marshal(man)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := mw.WriteField("manifest", string(manifestJSON)); err != nil {
+		return nil, false, err
+	}
+	for name, content := range files {
+		w, err := mw.CreateFormFile(name, name)
+		if err != nil {
+			return nil, false, err
+		}
+		if _, err := w.Write(content); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, false, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("%s/api/v1/modules/%s/versions", c.BaseURL, man.Module), &body)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+
+	var out api.PublishResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, false, fmt.Errorf("decode response: %w", err)
+	}
+	return &out, resp.StatusCode == http.StatusCreated, nil
+}
+
+// SetLabel points a label at a version.
+func (c *Client) SetLabel(module, label, version string) error {
+	body, _ := json.Marshal(map[string]string{"version": version})
+	req, err := http.NewRequest(http.MethodPut,
+		fmt.Sprintf("%s/api/v1/modules/%s/labels/%s", c.BaseURL, module, label), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}

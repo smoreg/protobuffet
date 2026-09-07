@@ -1,0 +1,11 @@
+# PHP generation uses protoc's built-in generator, which buf drives directly.
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  - protoc_builtin: php
+    out: gen/php
+    # Dependencies of the schema must be generated too, or PHP fails at runtime
+    # with "Class GPBMetadata\... not found". Well-known types are excluded:
+    # they ship with the google/protobuf composer package.
+    include_imports: true

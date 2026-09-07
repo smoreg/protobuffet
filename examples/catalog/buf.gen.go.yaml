@@ -1,0 +1,17 @@
+# Go generation with a local plugin: no network, no dependency on any hosted
+# plugin service. Install it once with:
+#   go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+version: v2
+inputs:
+  - directory: proto
+managed:
+  enabled: true
+  override:
+    # Must match targets.go.module in buffet.yaml, or consumers will import a
+    # path the registry does not serve.
+    - file_option: go_package_prefix
+      value: registry.example.com/gen/go/acme/catalog
+plugins:
+  - local: protoc-gen-go
+    out: gen/go
+    opt: paths=source_relative
