@@ -497,6 +497,47 @@ func (s *Store) ReadAll(m Module, version, file string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
+// CleanOrphans removes version directories that no index references, and
+// leftover staging directories. Returns the paths removed.
+func (s *Store) CleanOrphans() ([]string, error) {
+	mods, err := s.ListModules()
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, m := range mods {
+		mu := s.lock(m)
+		mu.Lock()
+		idx, err := s.Index(m)
+		if err != nil {
+			mu.Unlock()
+			return removed, err
+		}
+		known := map[string]bool{}
+		for _, v := range idx.Versions {
+			known[v.Version] = true
+		}
+		entries, err := os.ReadDir(filepath.Join(s.moduleDir(m), "versions"))
+		if err != nil && !os.IsNotExist(err) {
+			mu.Unlock()
+			return removed, err
+		}
+		for _, e := range entries {
+			if !e.IsDir() || known[e.Name()] {
+				continue
+			}
+			path := filepath.Join(s.moduleDir(m), "versions", e.Name())
+			if err := os.RemoveAll(path); err != nil {
+				mu.Unlock()
+				return removed, err
+			}
+			removed = append(removed, path)
+		}
+		mu.Unlock()
+	}
+	return removed, nil
+}
+
 func writeFileAtomic(path string, body []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
