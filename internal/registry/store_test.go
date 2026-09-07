@@ -117,6 +117,50 @@ func TestPublishRejectsDigestMismatch(t *testing.T) {
 	}
 }
 
+func TestPublishComputesDigestsItself(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	body := []byte("artifact body")
+	v, err := s.Publish(PublishRequest{
+		Module:    Module{Owner: "acme", Name: "catalog"},
+		Version:   "v1.0.0",
+		SchemaZip: []byte("schema"),
+		Artifacts: []Artifact{{Target: TargetComposer, Name: "acme/catalog-proto", Version: "1.0.0", File: "composer.zip"}},
+		Files:     map[string][]byte{"composer.zip": body},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := v.Artifacts[TargetComposer]
+	if a.SHA256 != SHA256Hex(body) {
+		t.Errorf("sha256 = %q", a.SHA256)
+	}
+	// Composer and npm read this field; an empty or wrong value makes the
+	// published package uninstallable forever.
+	if a.SHA1 != sha1hex(body) || a.SHA1 == "" {
+		t.Errorf("sha1 = %q, want %q", a.SHA1, sha1hex(body))
+	}
+	if a.Size != int64(len(body)) {
+		t.Errorf("size = %d", a.Size)
+	}
+}
+
+func TestPublishRejectsWrongSHA1(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	_, err := s.Publish(PublishRequest{
+		Module:    Module{Owner: "acme", Name: "catalog"},
+		Version:   "v1.0.0",
+		SchemaZip: []byte("schema"),
+		Artifacts: []Artifact{{
+			Target: TargetNPM, Name: "@acme/catalog", Version: "1.0.0", File: "npm.tgz",
+			SHA1: "0000000000000000000000000000000000000000",
+		}},
+		Files: map[string][]byte{"npm.tgz": []byte("real body")},
+	})
+	if !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("err = %v, want ErrDigestMismatch", err)
+	}
+}
+
 func TestOpenRejectsPathTraversal(t *testing.T) {
 	s, _ := NewStore(t.TempDir())
 	publish(t, s, "v1.0.0", []byte("a"))
@@ -148,5 +192,26 @@ func TestParseModuleRejectsBadNames(t *testing.T) {
 	}
 	if m, err := ParseModule("acme/catalog-v2"); err != nil || m.Name != "catalog-v2" {
 		t.Errorf("ParseModule rejected a valid name: %v", err)
+	}
+}
+
+func TestPredecessorPicksTheVersionBelow(t *testing.T) {
+	idx := &Index{Versions: []Version{
+		{Version: "v1.0.0"}, {Version: "v1.5.0"}, {Version: "v2.0.0"},
+	}}
+	cases := map[string]string{
+		"v1.6.0": "v1.5.0", // newest below, not the highest overall
+		"v1.0.1": "v1.0.0", // patch on an old line
+		"v3.0.0": "v2.0.0",
+		"v0.9.0": "v1.0.0", // older than everything: fall back to the lowest
+	}
+	for version, want := range cases {
+		got, ok := idx.Predecessor(version)
+		if !ok || got.Version != want {
+			t.Errorf("Predecessor(%s) = %v (ok=%v), want %s", version, got.Version, ok, want)
+		}
+	}
+	if _, ok := (&Index{}).Predecessor("v1.0.0"); ok {
+		t.Error("empty index reported a predecessor")
 	}
 }

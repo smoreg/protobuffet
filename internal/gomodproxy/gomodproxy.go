@@ -23,11 +23,11 @@ import (
 // Handler serves the proxy endpoints. Mount it under a prefix, for example
 // http.StripPrefix("/go", h).
 type Handler struct {
-	Store *registry.Store
+	Catalog *registry.Catalog
 }
 
 // New builds a handler.
-func New(store *registry.Store) *Handler { return &Handler{Store: store} }
+func New(catalog *registry.Catalog) *Handler { return &Handler{Catalog: catalog} }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -68,7 +68,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // lookup finds the module that publishes a Go module path, along with the
 // versions that actually carry a Go artifact.
 func (h *Handler) lookup(modPath string) (registry.Module, []registry.Version, error) {
-	mod, idx, err := h.Store.FindByTarget(registry.TargetGo, modPath)
+	mod, idx, err := h.Catalog.FindByTarget(registry.TargetGo, modPath)
 	if err != nil {
 		return registry.Module{}, nil, err
 	}
@@ -150,7 +150,7 @@ func (h *Handler) serveMod(w http.ResponseWriter, modPath, escapedVersion string
 		return
 	}
 	a, _ := v.Artifact(registry.TargetGo)
-	body, err := h.Store.ReadAll(mod, v.Version, a.File)
+	body, err := h.Catalog.ReadAll(mod, v.Version, a.File)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -173,7 +173,7 @@ func (h *Handler) serveZip(w http.ResponseWriter, r *http.Request, modPath, esca
 		return
 	}
 	a, _ := v.Artifact(registry.TargetGo)
-	f, size, err := h.Store.Open(mod, v.Version, a.File)
+	f, size, err := h.Catalog.Open(mod, v.Version, a.File)
 	if err != nil {
 		writeErr(w, err)
 		return

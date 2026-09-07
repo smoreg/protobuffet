@@ -44,6 +44,13 @@ func ParseModule(s string) (Module, error) {
 	return Module{Owner: owner, Name: name}, nil
 }
 
+// ParseModuleParts validates an owner and a name that arrived as separate path
+// segments. Package-manager download URLs carry them that way, and building a
+// Module from unvalidated segments would let a request steer the storage path.
+func ParseModuleParts(owner, name string) (Module, error) {
+	return ParseModule(owner + "/" + name)
+}
+
 func (m Module) String() string { return m.Owner + "/" + m.Name }
 
 // Artifact is one publishable file for one ecosystem.
@@ -97,6 +104,33 @@ func (i *Index) Find(version string) (Version, bool) {
 		}
 	}
 	return Version{}, false
+}
+
+// Predecessor returns the version a new one should be compared against: the
+// highest existing version below it. Comparing against the highest version
+// overall breaks patch releases on older lines — publishing v1.0.1 after
+// v2.0.0 would be checked against v2.0.0.
+//
+// When the new version is older than everything published, the lowest existing
+// version is returned instead, so a back-filled release is still checked
+// against something.
+func (i *Index) Predecessor(version string) (Version, bool) {
+	var below, lowest Version
+	var haveBelow, haveLowest bool
+	for _, v := range i.Versions {
+		if !haveLowest || CompareVersions(v.Version, lowest.Version) < 0 {
+			lowest, haveLowest = v, true
+		}
+		if CompareVersions(v.Version, version) < 0 {
+			if !haveBelow || CompareVersions(v.Version, below.Version) > 0 {
+				below, haveBelow = v, true
+			}
+		}
+	}
+	if haveBelow {
+		return below, true
+	}
+	return lowest, haveLowest
 }
 
 // Latest returns the highest semver version, which is the last entry because

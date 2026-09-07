@@ -12,9 +12,12 @@ base_url: ""
 # Set to false for a fully private registry.
 public_read: true
 
-# Refuse pushes that break wire compatibility with the latest version.
-# Requires the buf binary on PATH (it ships in the container image).
-breaking_check: true
+# The compatibility gate:
+#   required     refuse to start without buf, refuse any publish that cannot be
+#                checked, refuse breaking changes. The default.
+#   best-effort  check when possible, publish with a warning when buf is missing
+#   off          no checking
+breaking_check: required
 
 # Mint credentials with: buffet token
 tokens:

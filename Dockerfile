@@ -3,7 +3,7 @@
 # The registry shells out to buf for compatibility checks, so buf is built
 # from source here rather than pulled from a release tarball: one toolchain,
 # no extra download at runtime, and it stays a static binary.
-FROM golang:1.25-alpine AS build
+FROM golang:1.26.8-alpine AS build
 ARG VERSION=dev
 WORKDIR /src
 

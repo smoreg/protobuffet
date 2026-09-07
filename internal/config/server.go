@@ -23,13 +23,71 @@ type Server struct {
 	// PublicRead serves schemas and SDKs without a token. Publishing always
 	// requires one.
 	PublicRead bool `yaml:"public_read"`
-	// BreakingCheck refuses a push that breaks wire compatibility with the
-	// latest published version. Requires the buf binary on PATH.
-	BreakingCheck bool `yaml:"breaking_check"`
+	// BreakingCheck controls the compatibility gate. See BreakingMode.
+	BreakingCheck BreakingMode `yaml:"breaking_check"`
+	// BreakingPolicy decides whether a major version may break compatibility.
+	BreakingPolicy BreakingPolicy `yaml:"breaking_policy"`
 	// BufPath overrides the buf binary location.
 	BufPath string  `yaml:"buf_path"`
 	Tokens  []Token `yaml:"tokens"`
 }
+
+// BreakingMode says what happens when a push would break consumers, and what
+// happens when the check itself cannot run.
+type BreakingMode string
+
+const (
+	// BreakingOff disables the gate.
+	BreakingOff BreakingMode = "off"
+	// BreakingBestEffort checks when it can and publishes anyway when buf is
+	// unavailable. Convenient, and it means a broken toolchain silently
+	// removes the only protection consumers have.
+	BreakingBestEffort BreakingMode = "best-effort"
+	// BreakingRequired refuses to start without buf and refuses a publish it
+	// could not verify. This is the default.
+	BreakingRequired BreakingMode = "required"
+)
+
+// UnmarshalYAML accepts the historical boolean spelling: true means required,
+// false means off.
+func (m *BreakingMode) UnmarshalYAML(value *yaml.Node) error {
+	var b bool
+	if err := value.Decode(&b); err == nil {
+		if b {
+			*m = BreakingRequired
+		} else {
+			*m = BreakingOff
+		}
+		return nil
+	}
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return fmt.Errorf("breaking_check: want off, best-effort or required")
+	}
+	switch BreakingMode(s) {
+	case BreakingOff, BreakingBestEffort, BreakingRequired:
+		*m = BreakingMode(s)
+		return nil
+	default:
+		return fmt.Errorf("breaking_check %q: want off, best-effort or required", s)
+	}
+}
+
+// Enabled reports whether the check runs at all.
+func (m BreakingMode) Enabled() bool { return m != BreakingOff }
+
+// BreakingPolicy says whether a major version bump may carry breaking changes.
+type BreakingPolicy string
+
+const (
+	// PolicyStrict refuses breaking changes regardless of the version number.
+	// Correct for protobuf, where a new major belongs in a new package
+	// (catalog.v1 -> catalog.v2) and old consumers keep using the old one.
+	PolicyStrict BreakingPolicy = "strict"
+	// PolicyAllowMajor permits breaking changes when the major version
+	// increases, for teams that version the module rather than the package.
+	PolicyAllowMajor BreakingPolicy = "allow-major"
+)
 
 // Token is a credential for the API. Only the digest is stored.
 type Token struct {
@@ -56,9 +114,10 @@ func DefaultServer() Server {
 		// An empty base URL means "derive it from the request", which is what
 		// makes the server work behind any hostname without configuration.
 		// Set it explicitly when a proxy rewrites the Host header.
-		BaseURL:       "",
-		PublicRead:    true,
-		BreakingCheck: true,
+		BaseURL:        "",
+		PublicRead:     true,
+		BreakingCheck:  BreakingRequired,
+		BreakingPolicy: PolicyStrict,
 	}
 }
 
@@ -94,6 +153,23 @@ func LoadServer(path string) (Server, error) {
 	}
 	if v := os.Getenv("BUFFET_DATA"); v != "" {
 		cfg.Data = v
+	}
+	if v := os.Getenv("BUFFET_BREAKING_CHECK"); v != "" {
+		var mode BreakingMode
+		if err := mode.UnmarshalYAML(&yaml.Node{Kind: yaml.ScalarNode, Value: v}); err != nil {
+			return cfg, err
+		}
+		cfg.BreakingCheck = mode
+	}
+	if cfg.BreakingCheck == "" {
+		cfg.BreakingCheck = BreakingRequired
+	}
+	switch cfg.BreakingPolicy {
+	case "":
+		cfg.BreakingPolicy = PolicyStrict
+	case PolicyStrict, PolicyAllowMajor:
+	default:
+		return cfg, fmt.Errorf("breaking_policy %q: want strict or allow-major", cfg.BreakingPolicy)
 	}
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	if len(cfg.Tokens) == 0 {

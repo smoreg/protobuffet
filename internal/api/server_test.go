@@ -29,6 +29,10 @@ func newServer(t *testing.T) (*httptest.Server, config.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	catalog, err := registry.NewCatalog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.DefaultServer()
 	cfg.PublicRead = true
 	// Empty base URL exercises the request-derived fallback, which is what a
@@ -36,10 +40,13 @@ func newServer(t *testing.T) (*httptest.Server, config.Server) {
 	cfg.BaseURL = ""
 	// The compatibility check shells out to buf, which is not guaranteed on a
 	// test machine; publishing paths are covered without it.
-	cfg.BreakingCheck = false
+	cfg.BreakingCheck = config.BreakingOff
 	cfg.Tokens = []config.Token{{Subject: "test", SHA256: config.HashToken(testToken), Scopes: []string{"write"}}}
 
-	srv := api.New(cfg, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv, err := api.New(cfg, catalog, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	cfg.BaseURL = ts.URL
@@ -68,6 +75,7 @@ func buildFixture(t *testing.T, version string) (api.PublishManifest, map[string
 
 	phpDir := t.TempDir()
 	writeFile(t, filepath.Join(phpDir, "Catalog.php"), "<?php\n")
+	writeFile(t, filepath.Join(phpDir, "composer.json"), `{"name": "acme/catalog-proto"}`)
 	phpZip, err := pack.Zip(phpDir, "acme-catalog-proto-"+registry.EcosystemVersion(version), pack.SkipHidden)
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +83,8 @@ func buildFixture(t *testing.T, version string) (api.PublishManifest, map[string
 
 	tsDir := t.TempDir()
 	writeFile(t, filepath.Join(tsDir, "index.js"), "export {}\n")
+	writeFile(t, filepath.Join(tsDir, "package.json"),
+		`{"name": "@acme/catalog", "version": "`+registry.EcosystemVersion(version)+`"}`)
 	tgz, err := pack.TarGz(tsDir, "package", pack.SkipHidden)
 	if err != nil {
 		t.Fatal(err)

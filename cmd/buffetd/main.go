@@ -67,7 +67,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv := api.New(cfg, store, log)
+	catalog, err := registry.NewCatalog(store)
+	if err != nil {
+		return fmt.Errorf("load registry: %w", err)
+	}
+	srv, err := api.New(cfg, catalog, log)
+	if err != nil {
+		return err
+	}
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
@@ -85,9 +92,10 @@ func run() error {
 	go func() {
 		log.Info("listening",
 			"addr", cfg.Listen,
-			"data", store.Root(),
+			"data", catalog.Root(),
 			"base_url", baseURLOrDerived(cfg.BaseURL),
 			"public_read", cfg.PublicRead,
+			"breaking_check", cfg.BreakingCheck,
 			"version", version,
 		)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

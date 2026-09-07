@@ -19,14 +19,14 @@ import (
 
 // Handler serves packages.json and the dist archives.
 type Handler struct {
-	Store   *registry.Store
+	Catalog *registry.Catalog
 	BaseURL string
 }
 
 // New builds a handler. baseURL must be reachable by the Composer client,
 // because dist URLs are absolute.
-func New(store *registry.Store, baseURL string) *Handler {
-	return &Handler{Store: store, BaseURL: strings.TrimRight(baseURL, "/")}
+func New(catalog *registry.Catalog, baseURL string) *Handler {
+	return &Handler{Catalog: catalog, BaseURL: strings.TrimRight(baseURL, "/")}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -84,14 +84,14 @@ func baseURL(configured string, r *http.Request) string {
 }
 
 func (h *Handler) servePackages(w http.ResponseWriter, base string) {
-	mods, err := h.Store.ListModules()
+	mods, err := h.Catalog.ListModules()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	doc := packagesDoc{Packages: map[string]map[string]packageVersion{}}
 	for _, m := range mods {
-		idx, err := h.Store.Index(m)
+		idx, err := h.Catalog.Index(m)
 		if err != nil {
 			continue
 		}
@@ -140,10 +140,21 @@ func (h *Handler) serveDist(w http.ResponseWriter, r *http.Request, rest string)
 		http.NotFound(w, r)
 		return
 	}
-	mod := registry.Module{Owner: parts[0], Name: parts[1]}
-	version := strings.TrimSuffix(parts[2], ".zip")
+	// Validate before the segments reach the store: they are attacker
+	// controlled and end up in a filesystem path. A 404 rather than a 400
+	// keeps the path structure out of the answer.
+	mod, err := registry.ParseModuleParts(parts[0], parts[1])
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	version, err := registry.NormalizeVersion(strings.TrimSuffix(parts[2], ".zip"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 
-	idx, err := h.Store.Index(mod)
+	idx, err := h.Catalog.Index(mod)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -158,7 +169,7 @@ func (h *Handler) serveDist(w http.ResponseWriter, r *http.Request, rest string)
 		http.NotFound(w, r)
 		return
 	}
-	f, size, err := h.Store.Open(mod, version, a.File)
+	f, size, err := h.Catalog.Open(mod, version, a.File)
 	if err != nil {
 		writeErr(w, err)
 		return

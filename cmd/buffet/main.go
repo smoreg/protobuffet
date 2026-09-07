@@ -114,6 +114,7 @@ func cmdPublish(args []string) error {
 	skipGenerate := fs.Bool("skip-generate", false, "publish existing generated output without running buf generate")
 	skipLint := fs.Bool("skip-lint", false, "skip buf lint")
 	dryRun := fs.Bool("dry-run", false, "build artifacts and print what would be pushed")
+	allowBreaking := fs.Bool("allow-breaking", false, "publish even if the change breaks consumers (admin token only)")
 	bufPath := fs.String("buf", "", "path to the buf binary")
 	fs.Parse(args)
 
@@ -164,6 +165,7 @@ func cmdPublish(args []string) error {
 	if *label != "" {
 		man.Labels = []string{*label}
 	}
+	man.AllowBreaking = *allowBreaking
 	resp, ok, err := c.Publish(man, build.Files)
 	if err != nil {
 		return err
@@ -178,6 +180,8 @@ func cmdPublish(args []string) error {
 	fmt.Printf("\npublished %s@%s\n", resp.Module, resp.Version.Version)
 	if b := resp.Breaking; b != nil {
 		switch {
+		case b.Overridden != "":
+			fmt.Printf("compatibility: BREAKING against %s, published anyway (%s)\n", b.Against, b.Overridden)
 		case b.Checked:
 			fmt.Printf("compatibility: checked against %s, no breaking changes\n", b.Against)
 		case b.Skipped != "":

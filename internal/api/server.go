@@ -21,6 +21,7 @@ import (
 	"github.com/smoreg/protobuffet/internal/npmrepo"
 	"github.com/smoreg/protobuffet/internal/pypirepo"
 	"github.com/smoreg/protobuffet/internal/registry"
+	"github.com/smoreg/protobuffet/internal/verify"
 )
 
 // maxUpload caps a publish request. Schema modules and generated SDKs are
@@ -29,38 +30,43 @@ const maxUpload = 128 << 20
 
 // Server wires the store, the configuration and the HTTP routes together.
 type Server struct {
-	cfg   config.Server
-	store *registry.Store
-	buf   *buftool.Buf
-	log   *slog.Logger
-	mux   *http.ServeMux
+	cfg     config.Server
+	catalog *registry.Catalog
+	buf     *buftool.Buf
+	log     *slog.Logger
+	mux     *http.ServeMux
 }
 
-// New builds a server. A missing buf binary is not fatal: the server degrades
-// to accepting pushes without a compatibility check and says so in the log.
-func New(cfg config.Server, store *registry.Store, log *slog.Logger) *Server {
-	s := &Server{cfg: cfg, store: store, log: log, mux: http.NewServeMux()}
-	if cfg.BreakingCheck {
+// New builds a server. In the default "required" mode a missing buf binary is
+// fatal: a registry that cannot check compatibility silently stops protecting
+// consumers, and that is worse than not starting.
+func New(cfg config.Server, catalog *registry.Catalog, log *slog.Logger) (*Server, error) {
+	s := &Server{cfg: cfg, catalog: catalog, log: log, mux: http.NewServeMux()}
+	if cfg.BreakingCheck.Enabled() {
 		b, err := buftool.Find(cfg.BufPath)
-		if err != nil {
-			log.Warn("compatibility checks disabled: buf not available", "err", err)
-		} else {
+		switch {
+		case err == nil:
 			s.buf = b
-			log.Info("compatibility checks enabled", "buf", b.Path())
+			log.Info("compatibility checks enabled", "mode", cfg.BreakingCheck, "buf", b.Path())
+		case cfg.BreakingCheck == config.BreakingRequired:
+			return nil, fmt.Errorf("breaking_check is %q but buf is unavailable: %w (install buf, set buf_path, or lower breaking_check)",
+				cfg.BreakingCheck, err)
+		default:
+			log.Warn("compatibility checks degraded: buf not available", "mode", cfg.BreakingCheck, "err", err)
 		}
 	}
 	s.routes()
-	return s
+	return s, nil
 }
 
 func (s *Server) routes() {
 	read := func(h http.Handler) http.Handler { return s.requireScope("read", h) }
 	write := func(h http.HandlerFunc) http.Handler { return s.requireScope("write", h) }
 
-	s.mux.Handle("GET /go/", read(http.StripPrefix("/go/", gomodproxy.New(s.store))))
-	s.mux.Handle("GET /composer/", read(http.StripPrefix("/composer", composerrepo.New(s.store, s.cfg.BaseURL))))
-	s.mux.Handle("GET /npm/", read(npmrepo.New(s.store, s.cfg.BaseURL)))
-	s.mux.Handle("GET /pypi/", read(pypirepo.New(s.store, s.cfg.BaseURL)))
+	s.mux.Handle("GET /go/", read(http.StripPrefix("/go/", gomodproxy.New(s.catalog))))
+	s.mux.Handle("GET /composer/", read(http.StripPrefix("/composer", composerrepo.New(s.catalog, s.cfg.BaseURL))))
+	s.mux.Handle("GET /npm/", read(npmrepo.New(s.catalog, s.cfg.BaseURL)))
+	s.mux.Handle("GET /pypi/", read(pypirepo.New(s.catalog, s.cfg.BaseURL)))
 
 	s.mux.Handle("GET /api/v1/modules", read(http.HandlerFunc(s.listModules)))
 	s.mux.Handle("GET /api/v1/modules/{owner}/{name}", read(http.HandlerFunc(s.getModule)))
@@ -106,7 +112,7 @@ func (r *statusRecorder) WriteHeader(code int) {
 }
 
 func (s *Server) listModules(w http.ResponseWriter, r *http.Request) {
-	mods, err := s.store.ListModules()
+	mods, err := s.catalog.ListModules()
 	if err != nil {
 		httpError(w, err)
 		return
@@ -119,7 +125,7 @@ func (s *Server) listModules(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]entry, 0, len(mods))
 	for _, m := range mods {
-		idx, err := s.store.Index(m)
+		idx, err := s.catalog.Index(m)
 		if err != nil {
 			continue
 		}
@@ -142,7 +148,7 @@ func (s *Server) getModule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	idx, err := s.store.Index(m)
+	idx, err := s.catalog.Index(m)
 	if err != nil {
 		httpError(w, err)
 		return
@@ -156,7 +162,7 @@ func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	v, err := s.store.Resolve(m, r.PathValue("version"))
+	v, err := s.catalog.Resolve(m, r.PathValue("version"))
 	if err != nil {
 		httpError(w, err)
 		return
@@ -170,12 +176,12 @@ func (s *Server) getSchema(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	v, err := s.store.Resolve(m, r.PathValue("version"))
+	v, err := s.catalog.Resolve(m, r.PathValue("version"))
 	if err != nil {
 		httpError(w, err)
 		return
 	}
-	f, size, err := s.store.Open(m, v.Version, "schema.zip")
+	f, size, err := s.catalog.Open(m, v.Version, "schema.zip")
 	if err != nil {
 		httpError(w, err)
 		return
@@ -200,7 +206,7 @@ func (s *Server) setLabel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.store.SetLabel(m, r.PathValue("label"), body.Version); err != nil {
+	if err := s.catalog.SetLabel(m, r.PathValue("label"), body.Version); err != nil {
 		httpError(w, err)
 		return
 	}
@@ -245,12 +251,42 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report, err := s.checkBreaking(r.Context(), m, schema)
+	// Reject a malformed artifact before it becomes an immutable version.
+	for _, a := range man.Artifacts {
+		body, ok := files[a.File]
+		if !ok {
+			http.Error(w, fmt.Sprintf("artifact %s: file %q missing from the request", a.Target, a.File),
+				http.StatusBadRequest)
+			return
+		}
+		if err := verify.Artifact(a, body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if man.AllowBreaking {
+		tok, ok := tokenFrom(r)
+		if !ok || !tok.Can("admin") {
+			http.Error(w, "allow_breaking requires an admin token", http.StatusForbidden)
+			return
+		}
+	}
+
+	wanted, err := registry.NormalizeVersion(man.Version)
 	if err != nil {
-		httpError(w, err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if report != nil && report.Findings != "" {
+	report, err := s.checkBreaking(r.Context(), m, wanted, schema, man.AllowBreaking)
+	if err != nil {
+		// In required mode a check that cannot run is a refusal, not a
+		// warning: 503 tells the client to retry once the registry is healthy.
+		s.log.Error("compatibility check failed", "module", m.String(), "err", err)
+		http.Error(w, "compatibility check could not run: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if report != nil && report.Findings != "" && report.Overridden == "" {
 		writeJSON(w, http.StatusConflict, PublishResponse{Module: m.String(), Breaking: report})
 		return
 	}
@@ -259,7 +295,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	if tok, ok := tokenFrom(r); ok {
 		subject = tok.Subject
 	}
-	version, err := s.store.Publish(registry.PublishRequest{
+	version, err := s.catalog.Publish(registry.PublishRequest{
 		Module:      m,
 		Version:     man.Version,
 		SchemaZip:   schema,
@@ -276,24 +312,42 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, PublishResponse{Module: m.String(), Version: version, Breaking: report})
 }
 
-// checkBreaking compares an incoming schema archive with the latest published
-// one. It returns a report; findings mean the push must be refused.
-func (s *Server) checkBreaking(ctx context.Context, m registry.Module, schema []byte) (*BreakingReport, error) {
+// checkBreaking compares an incoming schema archive with the version that
+// precedes it. A report carrying findings means the push must be refused,
+// unless policy or an admin override says otherwise.
+func (s *Server) checkBreaking(ctx context.Context, m registry.Module, version string, schema []byte, allowBreaking bool) (*BreakingReport, error) {
+	if !s.cfg.BreakingCheck.Enabled() {
+		return &BreakingReport{Skipped: "breaking_check is off"}, nil
+	}
 	if s.buf == nil {
+		if s.cfg.BreakingCheck == config.BreakingRequired {
+			return nil, fmt.Errorf("buf binary unavailable")
+		}
+		s.log.Warn("publish not checked for compatibility", "module", m.String(), "reason", "buf unavailable")
 		return &BreakingReport{Skipped: "buf binary unavailable"}, nil
 	}
-	idx, err := s.store.Index(m)
+	idx, err := s.catalog.Index(m)
 	if errors.Is(err, registry.ErrNotFound) {
 		return &BreakingReport{Skipped: "first version of this module"}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	prev, ok := idx.Latest()
+	prev, ok := idx.Predecessor(version)
 	if !ok {
 		return &BreakingReport{Skipped: "first version of this module"}, nil
 	}
-	prevZip, err := s.store.ReadAll(m, prev.Version, "schema.zip")
+	// Under allow-major, a major bump is where breaking changes are meant to
+	// live, so the gate steps aside and says so in the report.
+	if s.cfg.BreakingPolicy == config.PolicyAllowMajor &&
+		registry.MajorOf(version) != registry.MajorOf(prev.Version) {
+		return &BreakingReport{
+			Against:    prev.Version,
+			Skipped:    "major version bump under the allow-major policy",
+			Overridden: "policy allow-major",
+		}, nil
+	}
+	prevZip, err := s.catalog.ReadAll(m, prev.Version, "schema.zip")
 	if err != nil {
 		return nil, err
 	}
@@ -315,14 +369,22 @@ func (s *Server) checkBreaking(ctx context.Context, m registry.Module, schema []
 
 	res, err := s.buf.Breaking(ctx, dir, newPath, oldPath)
 	if err != nil {
-		// A check that cannot run must not silently pass, but it must not
-		// take the registry down either: report it and let the push through.
-		s.log.Warn("compatibility check failed to run", "module", m.String(), "err", err)
+		if s.cfg.BreakingCheck == config.BreakingRequired {
+			return nil, err
+		}
+		s.log.Warn("publish not checked for compatibility", "module", m.String(), "err", err)
 		return &BreakingReport{Skipped: "check could not run: " + err.Error()}, nil
 	}
 	report := &BreakingReport{Checked: true, Against: prev.Version}
 	if !res.Compatible {
 		report.Findings = res.Output
+		if allowBreaking {
+			// Recorded rather than hidden: the version keeps the note, and so
+			// does the log.
+			report.Overridden = "admin override"
+			s.log.Warn("breaking change published by override",
+				"module", m.String(), "version", version, "against", prev.Version)
+		}
 	}
 	return report, nil
 }

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -66,6 +67,18 @@ func (s *Store) versionDir(m Module, version string) string {
 	return filepath.Join(s.moduleDir(m), "versions", version)
 }
 
+// underRoot rejects any path that escapes the store, whatever produced it.
+// Callers validate their input; this is the backstop that keeps a future
+// caller from turning a validation slip into arbitrary filesystem access.
+func (s *Store) underRoot(path string) error {
+	base := filepath.Clean(filepath.Join(s.root, "modules"))
+	clean := filepath.Clean(path)
+	if clean != base && !strings.HasPrefix(clean, base+string(os.PathSeparator)) {
+		return fmt.Errorf("path %q escapes the store: %w", path, ErrNotFound)
+	}
+	return nil
+}
+
 // ListModules returns every module known to the store, sorted.
 func (s *Store) ListModules() ([]Module, error) {
 	base := filepath.Join(s.root, "modules")
@@ -95,13 +108,21 @@ func (s *Store) ListModules() ([]Module, error) {
 			out = append(out, Module{Owner: o.Name(), Name: n.Name()})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	sortModules(out)
 	return out, nil
+}
+
+func sortModules(mods []Module) {
+	sort.Slice(mods, func(i, j int) bool { return mods[i].String() < mods[j].String() })
 }
 
 // Index reads a module index.
 func (s *Store) Index(m Module) (*Index, error) {
-	b, err := os.ReadFile(filepath.Join(s.moduleDir(m), "index.json"))
+	path := filepath.Join(s.moduleDir(m), "index.json")
+	if err := s.underRoot(path); err != nil {
+		return nil, err
+	}
+	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("module %s: %w", m, ErrNotFound)
@@ -140,14 +161,26 @@ func (s *Store) Publish(req PublishRequest) (Version, error) {
 	}
 	schemaSHA := sha256hex(req.SchemaZip)
 
-	for _, a := range req.Artifacts {
+	// Digests are computed here, from the bytes that will actually be stored.
+	// A digest supplied by the client is treated as a claim to verify, never
+	// as the value to publish: a wrong shasum in Composer or npm metadata
+	// makes the package uninstallable, and versions are immutable.
+	for i, a := range req.Artifacts {
 		body, ok := req.Files[a.File]
 		if !ok {
 			return Version{}, fmt.Errorf("artifact %s: file %q missing from request", a.Target, a.File)
 		}
-		if a.SHA256 != "" && a.SHA256 != sha256hex(body) {
-			return Version{}, fmt.Errorf("artifact %s: %w", a.Target, ErrDigestMismatch)
+		sha256sum, sha1sum := sha256hex(body), sha1hex(body)
+		if a.SHA256 != "" && a.SHA256 != sha256sum {
+			return Version{}, fmt.Errorf("artifact %s: sha256 claimed %s, got %s: %w",
+				a.Target, short(a.SHA256), short(sha256sum), ErrDigestMismatch)
 		}
+		if a.SHA1 != "" && a.SHA1 != sha1sum {
+			return Version{}, fmt.Errorf("artifact %s: sha1 claimed %s, got %s: %w",
+				a.Target, short(a.SHA1), short(sha1sum), ErrDigestMismatch)
+		}
+		req.Artifacts[i].SHA256 = sha256sum
+		req.Artifacts[i].SHA1 = sha1sum
 	}
 
 	idx, err := s.Index(req.Module)
@@ -189,9 +222,6 @@ func (s *Store) Publish(req PublishRequest) (Version, error) {
 			return Version{}, err
 		}
 		a.Size = int64(len(body))
-		if a.SHA256 == "" {
-			a.SHA256 = sha256hex(body)
-		}
 		v.Artifacts[a.Target] = a
 	}
 
@@ -251,6 +281,10 @@ func (s *Store) Resolve(m Module, ref string) (Version, error) {
 	if err != nil {
 		return Version{}, err
 	}
+	return resolveIn(idx, m, ref)
+}
+
+func resolveIn(idx *Index, m Module, ref string) (Version, error) {
 	if ref == "" || ref == "latest" {
 		v, ok := idx.Latest()
 		if !ok {
@@ -272,12 +306,18 @@ func (s *Store) Resolve(m Module, ref string) (Version, error) {
 	return v, nil
 }
 
+// readSeekCloser is what http.ServeContent needs from a stored file.
+type readSeekCloser = io.ReadSeekCloser
+
 // Open returns a file stored for a version: "schema.zip" or an artifact file.
 func (s *Store) Open(m Module, version, file string) (io.ReadSeekCloser, int64, error) {
 	if strings.ContainsAny(file, `/\`) || file == "" || strings.HasPrefix(file, ".") {
 		return nil, 0, fmt.Errorf("file %q: %w", file, ErrNotFound)
 	}
 	p := filepath.Join(s.versionDir(m, version), file)
+	if err := s.underRoot(p); err != nil {
+		return nil, 0, err
+	}
 	f, err := os.Open(p)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -354,6 +394,20 @@ func writeFileAtomic(path string, body []byte) error {
 func sha256hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// sha1hex is what Composer and npm put in their metadata. It guards against a
+// corrupted transfer, not against a hostile one; authenticity comes from TLS.
+func sha1hex(b []byte) string {
+	sum := sha1.Sum(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func short(digest string) string {
+	if len(digest) > 12 {
+		return digest[:12]
+	}
+	return digest
 }
 
 // SHA256Hex exposes the digest helper to other packages.

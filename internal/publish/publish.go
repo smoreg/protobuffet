@@ -4,8 +4,6 @@ package publish
 
 import (
 	"context"
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -166,7 +164,6 @@ func buildGo(ctx context.Context, buf *buftool.Buf, m *config.Module, t *config.
 		Version: version,
 		File:    "go.zip",
 		SHA256:  registry.SHA256Hex(body),
-		SHA1:    sha1hex(body),
 		Meta:    map[string]any{"require": t.Require},
 	}, body, nil
 }
@@ -236,7 +233,6 @@ func buildComposer(ctx context.Context, buf *buftool.Buf, m *config.Module, t *c
 		Version: pkgVersion,
 		File:    "composer.zip",
 		SHA256:  registry.SHA256Hex(zipBody),
-		SHA1:    sha1hex(zipBody),
 		Meta:    meta,
 	}, zipBody, nil
 }
@@ -290,7 +286,6 @@ func buildNPM(ctx context.Context, buf *buftool.Buf, m *config.Module, t *config
 		Version: pkgVersion,
 		File:    "npm.tgz",
 		SHA256:  registry.SHA256Hex(tgz),
-		SHA1:    sha1hex(tgz),
 		Meta:    meta,
 	}, tgz, nil
 }
@@ -324,7 +319,6 @@ func buildPython(ctx context.Context, buf *buftool.Buf, m *config.Module, t *con
 		Version: pkgVersion,
 		File:    "python.whl",
 		SHA256:  registry.SHA256Hex(wheel),
-		SHA1:    sha1hex(wheel),
 		Meta:    meta,
 	}, wheel, nil
 }
@@ -343,12 +337,4 @@ func toAnyMap(in map[string]string) map[string]any {
 		out[k] = v
 	}
 	return out
-}
-
-// sha1hex is what Composer and npm use to verify a downloaded archive. It is
-// an integrity check against corrupted transfers, not a security boundary:
-// authenticity comes from serving the registry over TLS.
-func sha1hex(b []byte) string {
-	sum := sha1.Sum(b)
-	return hex.EncodeToString(sum[:])
 }

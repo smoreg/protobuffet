@@ -106,7 +106,7 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	mods, err := s.store.ListModules()
+	mods, err := s.catalog.ListModules()
 	if err != nil {
 		httpError(w, err)
 		return
@@ -117,7 +117,7 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 		Empty:    len(mods) == 0,
 	}
 	for _, m := range mods {
-		idx, err := s.store.Index(m)
+		idx, err := s.catalog.Index(m)
 		if err != nil {
 			continue
 		}
@@ -136,7 +136,7 @@ func (s *Server) uiModule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	idx, err := s.store.Index(m)
+	idx, err := s.catalog.Index(m)
 	if err != nil {
 		httpError(w, err)
 		return

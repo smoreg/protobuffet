@@ -11,6 +11,9 @@ type PublishManifest struct {
 	Artifacts []registry.Artifact `json:"artifacts"`
 	// SchemaSHA256 lets the server verify the upload arrived intact.
 	SchemaSHA256 string `json:"schema_sha256"`
+	// AllowBreaking asks the registry to publish despite breaking changes.
+	// Only an admin token may set it, and the decision is recorded.
+	AllowBreaking bool `json:"allow_breaking,omitempty"`
 }
 
 // PublishResponse is returned after a successful publish.
@@ -26,4 +29,7 @@ type BreakingReport struct {
 	Against  string `json:"against,omitempty"`
 	Skipped  string `json:"skipped,omitempty"`
 	Findings string `json:"findings,omitempty"`
+	// Overridden records that findings existed but the version was published
+	// anyway, either by policy (a major bump) or by an admin override.
+	Overridden string `json:"overridden,omitempty"`
 }

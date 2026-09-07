@@ -66,6 +66,10 @@ func PythonVersion(v string) string {
 // CompareVersions orders two registry versions by semver precedence.
 func CompareVersions(a, b string) int { return semver.Compare(a, b) }
 
+// MajorOf returns the major version prefix ("v1", "v2") used to decide whether
+// a breaking change is allowed under the allow-major policy.
+func MajorOf(v string) string { return semver.Major(v) }
+
 // IsPseudo reports whether a version was generated rather than tagged.
 func IsPseudo(v string) bool {
 	return strings.HasPrefix(v, "v0.0.0-") && strings.Count(v, "-") >= 2

@@ -15,13 +15,13 @@ import (
 
 // Handler serves the simple index and the wheel files.
 type Handler struct {
-	Store   *registry.Store
+	Catalog *registry.Catalog
 	BaseURL string
 }
 
 // New builds a handler.
-func New(store *registry.Store, baseURL string) *Handler {
-	return &Handler{Store: store, BaseURL: strings.TrimRight(baseURL, "/")}
+func New(catalog *registry.Catalog, baseURL string) *Handler {
+	return &Handler{Catalog: catalog, BaseURL: strings.TrimRight(baseURL, "/")}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -89,13 +89,22 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, rest string)
 		http.NotFound(w, r)
 		return
 	}
-	mod := registry.Module{Owner: parts[0], Name: parts[1]}
-	idx, err := h.Store.Index(mod)
+	mod, err := registry.ParseModuleParts(parts[0], parts[1])
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	version, err := registry.NormalizeVersion(parts[2])
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	idx, err := h.Catalog.Index(mod)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	v, ok := idx.Find(parts[2])
+	v, ok := idx.Find(version)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -105,7 +114,7 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, rest string)
 		http.NotFound(w, r)
 		return
 	}
-	f, size, err := h.Store.Open(mod, v.Version, a.File)
+	f, size, err := h.Catalog.Open(mod, v.Version, a.File)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -117,12 +126,12 @@ func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, rest string)
 }
 
 func (h *Handler) eachArtifact(fn func(registry.Module, registry.Version, registry.Artifact)) {
-	mods, err := h.Store.ListModules()
+	mods, err := h.Catalog.ListModules()
 	if err != nil {
 		return
 	}
 	for _, m := range mods {
-		idx, err := h.Store.Index(m)
+		idx, err := h.Catalog.Index(m)
 		if err != nil {
 			continue
 		}

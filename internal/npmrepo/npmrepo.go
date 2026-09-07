@@ -16,13 +16,13 @@ import (
 
 // Handler serves package metadata and tarballs.
 type Handler struct {
-	Store   *registry.Store
+	Catalog *registry.Catalog
 	BaseURL string
 }
 
 // New builds a handler.
-func New(store *registry.Store, baseURL string) *Handler {
-	return &Handler{Store: store, BaseURL: strings.TrimRight(baseURL, "/")}
+func New(catalog *registry.Catalog, baseURL string) *Handler {
+	return &Handler{Catalog: catalog, BaseURL: strings.TrimRight(baseURL, "/")}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -85,7 +85,7 @@ func baseURL(configured string, r *http.Request) string {
 }
 
 func (h *Handler) servePackument(w http.ResponseWriter, name, base string) {
-	mods, err := h.Store.ListModules()
+	mods, err := h.Catalog.ListModules()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -98,7 +98,7 @@ func (h *Handler) servePackument(w http.ResponseWriter, name, base string) {
 	}
 	var latest string
 	for _, m := range mods {
-		idx, err := h.Store.Index(m)
+		idx, err := h.Catalog.Index(m)
 		if err != nil {
 			continue
 		}
@@ -147,10 +147,18 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, rest stri
 		http.NotFound(w, r)
 		return
 	}
-	mod := registry.Module{Owner: parts[0], Name: parts[1]}
-	version := strings.TrimSuffix(parts[2], ".tgz")
+	mod, err := registry.ParseModuleParts(parts[0], parts[1])
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	version, err := registry.NormalizeVersion(strings.TrimSuffix(parts[2], ".tgz"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
 
-	idx, err := h.Store.Index(mod)
+	idx, err := h.Catalog.Index(mod)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -165,7 +173,7 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, rest stri
 		http.NotFound(w, r)
 		return
 	}
-	f, size, err := h.Store.Open(mod, version, a.File)
+	f, size, err := h.Catalog.Open(mod, version, a.File)
 	if err != nil {
 		writeErr(w, err)
 		return
