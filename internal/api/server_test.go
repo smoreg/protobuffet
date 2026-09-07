@@ -195,19 +195,30 @@ func TestPublishAndServeEveryEcosystem(t *testing.T) {
 	})
 
 	t.Run("composer", func(t *testing.T) {
+		// Composer 2 reads the root, then the per-package document it points at.
+		var root struct {
+			MetadataURL string `json:"metadata-url"`
+		}
+		if err := json.Unmarshal([]byte(get(t, ts.URL+"/composer/packages.json")), &root); err != nil {
+			t.Fatal(err)
+		}
+		if root.MetadataURL == "" {
+			t.Fatal("root document has no metadata-url")
+		}
 		var doc struct {
-			Packages map[string]map[string]struct {
+			Packages map[string][]struct {
 				Name string
 				Dist struct{ URL, Shasum string }
 			}
 		}
-		if err := json.Unmarshal([]byte(get(t, ts.URL+"/composer/packages.json")), &doc); err != nil {
+		if err := json.Unmarshal([]byte(get(t, ts.URL+"/composer/p2/acme/catalog-proto.json")), &doc); err != nil {
 			t.Fatal(err)
 		}
-		v, ok := doc.Packages["acme/catalog-proto"]["1.0.0"]
-		if !ok {
-			t.Fatalf("packages.json missing the package: %+v", doc)
+		versions := doc.Packages["acme/catalog-proto"]
+		if len(versions) == 0 {
+			t.Fatalf("package document missing versions: %+v", doc)
 		}
+		v := versions[0]
 		if !strings.HasSuffix(v.Dist.URL, "/composer/dist/acme/catalog/v1.0.0.zip") {
 			t.Errorf("dist url = %q", v.Dist.URL)
 		}

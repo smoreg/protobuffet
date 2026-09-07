@@ -183,6 +183,8 @@ gate.
 - The registry does not host schema dependencies. `deps:` in `buf.yaml` still
   resolves through buf.build or vendored copies.
 - No generated documentation browser.
+- Generation runs on the client. If your CI cannot run `buf`, this is not for
+  you.
 
 ## Commands
 
@@ -191,14 +193,24 @@ buffet publish   generate SDKs, pack and push a version
 buffet check     compare local schemas against the registry without publishing
 buffet list      list modules
 buffet info      show versions, targets and labels of one module
+buffet label     move a label to a version
+buffet yank      hide a bad release, keeping it downloadable
+buffet unyank    undo a yank
 buffet login     store a token for a registry
 buffet token     mint a token and print its config digest
 ```
 
-Kubernetes: [`docs/kubernetes.md`](docs/kubernetes.md) and [`deploy/k8s`](deploy/k8s).
-Server configuration: [`buffetd.example.yaml`](buffetd.example.yaml).
-Running it in production: [`docs/self-hosting.md`](docs/self-hosting.md).
-Endpoints and formats: [`docs/protocol.md`](docs/protocol.md).
+The server takes `buffetd -gc` to apply the retention policy, and reloads
+credentials on `SIGHUP`.
+
+| Document | What is in it |
+|---|---|
+| [`buffetd.example.yaml`](buffetd.example.yaml) | every server setting |
+| [`docs/self-hosting.md`](docs/self-hosting.md) | TLS, tokens, backups, retention, audit |
+| [`docs/kubernetes.md`](docs/kubernetes.md) + [`deploy/k8s`](deploy/k8s) | manifests and how names resolve |
+| [`docs/protocol.md`](docs/protocol.md) | the endpoints each package manager uses |
+| [`docs/migration-from-bsr.md`](docs/migration-from-bsr.md) | moving off the Buf Schema Registry |
+| [`docs/runbook.md`](docs/runbook.md) | diagnosing what a client sees, rotation, restore |
 
 ## Development
 

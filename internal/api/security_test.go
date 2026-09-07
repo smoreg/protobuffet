@@ -2,9 +2,12 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +16,7 @@ import (
 	"github.com/smoreg/protobuffet/internal/api"
 	"github.com/smoreg/protobuffet/internal/client"
 	"github.com/smoreg/protobuffet/internal/config"
+	"github.com/smoreg/protobuffet/internal/pack"
 	"github.com/smoreg/protobuffet/internal/registry"
 )
 
@@ -236,5 +240,97 @@ func TestHealthzAndUnknownRoutes(t *testing.T) {
 	resp.Body.Close()
 	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
 		t.Error("nosniff header missing")
+	}
+}
+
+func TestModuleListingPaginates(t *testing.T) {
+	ts, _ := newServer(t)
+	c := client.New(ts.URL, testToken)
+	ctx := context.Background()
+
+	for i := range 5 {
+		man, files := buildFixtureAt(t, "v1.0.0", fmt.Sprintf("registry.test/gen/go/acme/mod%d", i))
+		man.Module = fmt.Sprintf("acme/mod%d", i)
+		man.Artifacts[1].Name = fmt.Sprintf("acme/mod%d-proto", i)
+		man.Artifacts[2].Name = fmt.Sprintf("@acme/mod%d", i)
+		man.Artifacts[3].Name = fmt.Sprintf("acme-mod%d-proto", i)
+		rebuildForModule(t, &man, files, i)
+		if _, ok, err := c.Publish(ctx, man, files); err != nil || !ok {
+			t.Fatalf("publish %d: %v %v", i, ok, err)
+		}
+	}
+
+	// One page at a time, following the cursor, must visit every module once.
+	seen := map[string]bool{}
+	cursor := ""
+	for range 10 {
+		url := ts.URL + "/api/v1/modules?limit=2"
+		if cursor != "" {
+			url += "&cursor=" + cursor
+		}
+		var page struct {
+			Modules []struct{ Module string }
+			Next    string
+		}
+		if err := json.Unmarshal([]byte(get(t, url)), &page); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range page.Modules {
+			if seen[m.Module] {
+				t.Errorf("module %s returned twice", m.Module)
+			}
+			seen[m.Module] = true
+		}
+		if page.Next == "" {
+			break
+		}
+		cursor = page.Next
+	}
+	if len(seen) != 5 {
+		t.Errorf("paged through %d modules, want 5", len(seen))
+	}
+
+	// The client follows pages itself.
+	mods, err := c.ListModules(ctx)
+	if err != nil || len(mods) != 5 {
+		t.Errorf("ListModules = %d modules, %v", len(mods), err)
+	}
+}
+
+// rebuildForModule repacks the fixture's composer and npm artifacts so each
+// module owns distinct package names.
+func rebuildForModule(t *testing.T, man *api.PublishManifest, files map[string][]byte, i int) {
+	t.Helper()
+	phpDir := t.TempDir()
+	writeFile(t, filepath.Join(phpDir, "Catalog.php"), "<?php\n")
+	writeFile(t, filepath.Join(phpDir, "composer.json"),
+		fmt.Sprintf(`{"name": "acme/mod%d-proto"}`, i))
+	body, err := pack.Zip(phpDir, fmt.Sprintf("acme-mod%d-proto-1.0.0", i), pack.SkipHidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files["composer.zip"] = body
+
+	tsDir := t.TempDir()
+	writeFile(t, filepath.Join(tsDir, "index.js"), "export {}\n")
+	writeFile(t, filepath.Join(tsDir, "package.json"),
+		fmt.Sprintf(`{"name": "@acme/mod%d", "version": "1.0.0"}`, i))
+	tgz, err := pack.TarGz(tsDir, "package", pack.SkipHidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files["npm.tgz"] = tgz
+
+	pyDir := t.TempDir()
+	writeFile(t, filepath.Join(pyDir, "catalog/v1/catalog_pb2.py"), "# generated\n")
+	wheel, err := pack.Wheel(pyDir, pack.WheelMeta{
+		Name: fmt.Sprintf("acme-mod%d-proto", i), Version: "1.0.0", RequiresPython: ">=3.8",
+	}, pack.SkipHidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files["python.whl"] = wheel
+	for j := range man.Artifacts {
+		man.Artifacts[j].SHA256 = ""
 	}
 }

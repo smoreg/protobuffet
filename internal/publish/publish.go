@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/smoreg/protobuffet/internal/buftool"
 	"github.com/smoreg/protobuffet/internal/config"
 	"github.com/smoreg/protobuffet/internal/pack"
@@ -28,10 +30,18 @@ type Build struct {
 }
 
 // SchemaArchive packs the schema module: the buf configuration plus every
-// .proto below the configured proto directory. Nothing else is included, so
-// the digest changes only when the contract changes.
+// .proto it covers. Nothing else is included, so the digest changes only when
+// the contract does.
+//
+// The set of directories comes from buf.yaml, not only from the `proto:` field
+// in buffet.yaml: a v2 workspace can declare several modules, and an archive
+// missing one of them makes the server-side compatibility check compare an
+// incomplete schema, or fail outright.
 func SchemaArchive(m *config.Module) ([]byte, error) {
-	proto := filepath.ToSlash(strings.TrimPrefix(filepath.Clean(m.Proto), "./"))
+	dirs, err := schemaDirs(m)
+	if err != nil {
+		return nil, err
+	}
 	keep := func(rel string) bool {
 		if !pack.SkipHidden(rel) {
 			return false
@@ -40,12 +50,67 @@ func SchemaArchive(m *config.Module) ([]byte, error) {
 		case "buf.yaml", "buf.lock", "buf.work.yaml":
 			return true
 		}
-		if proto == "." {
-			return strings.HasSuffix(rel, ".proto")
+		if !strings.HasSuffix(rel, ".proto") {
+			return false
 		}
-		return strings.HasPrefix(rel, proto+"/") && strings.HasSuffix(rel, ".proto")
+		for _, dir := range dirs {
+			if dir == "." || strings.HasPrefix(rel, dir+"/") {
+				return true
+			}
+		}
+		return false
 	}
 	return pack.Zip(m.Dir, "", keep)
+}
+
+// bufConfig is the part of buf.yaml that says where the protos live.
+type bufConfig struct {
+	Version string `yaml:"version"`
+	Modules []struct {
+		Path string `yaml:"path"`
+	} `yaml:"modules"`
+}
+
+// schemaDirs returns every directory holding protos, taken from buf.yaml when
+// it is present and falling back to the configured proto directory.
+func schemaDirs(m *config.Module) ([]string, error) {
+	configured := cleanRel(m.Proto)
+	body, err := os.ReadFile(filepath.Join(m.Dir, "buf.yaml"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{configured}, nil
+		}
+		return nil, fmt.Errorf("read buf.yaml: %w", err)
+	}
+	var cfg bufConfig
+	if err := yaml.Unmarshal(body, &cfg); err != nil {
+		return nil, fmt.Errorf("parse buf.yaml: %w", err)
+	}
+	if len(cfg.Modules) == 0 {
+		// v1 configs, and v2 configs without an explicit module list, treat
+		// the config directory as the module root.
+		if cfg.Version == "v1" {
+			return []string{"."}, nil
+		}
+		return []string{configured}, nil
+	}
+	seen := map[string]bool{configured: true}
+	dirs := []string{configured}
+	for _, mod := range cfg.Modules {
+		dir := cleanRel(mod.Path)
+		if !seen[dir] {
+			seen[dir] = true
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs, nil
+}
+
+func cleanRel(p string) string {
+	if p == "" {
+		return "."
+	}
+	return filepath.ToSlash(filepath.Clean(p))
 }
 
 // ResolveVersion picks the version for a publish: an explicit one wins, then

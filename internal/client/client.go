@@ -70,11 +70,28 @@ type ModuleSummary struct {
 	Updated  time.Time `json:"updated"`
 }
 
-// ListModules returns every module in the registry.
+// ListModules returns every module in the registry, following pagination.
 func (c *Client) ListModules(ctx context.Context) ([]ModuleSummary, error) {
-	var out []ModuleSummary
-	err := c.getJSON(ctx, "/api/v1/modules", &out)
-	return out, err
+	var all []ModuleSummary
+	cursor := ""
+	for {
+		var page struct {
+			Modules []ModuleSummary `json:"modules"`
+			Next    string          `json:"next"`
+		}
+		path := "/api/v1/modules?limit=1000"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		if err := c.getJSON(ctx, path, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Modules...)
+		if page.Next == "" {
+			return all, nil
+		}
+		cursor = page.Next
+	}
 }
 
 // Module returns a module index.

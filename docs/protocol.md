@@ -98,6 +98,16 @@ Versions follow PEP 440 rather than semver: `v1.2.3` becomes `1.2.3`,
 | `GET` | `/api/v1/modules/{owner}/{name}/versions/{version}/schema.zip` | read |
 | `POST` | `/api/v1/modules/{owner}/{name}/versions` | write |
 | `PUT` | `/api/v1/modules/{owner}/{name}/labels/{label}` | write |
+| `PUT` | `/api/v1/modules/{owner}/{name}/versions/{version}/yank` | admin |
+| `DELETE` | `/api/v1/modules/{owner}/{name}/versions/{version}/yank` | admin |
+| `GET` | `/api/v1/audit?limit=` | admin |
+| `GET` | `/metrics` | read |
+| `GET` | `/healthz` | none |
+
+Listings are paginated: `/api/v1/modules?limit=100&cursor=<last module>`
+returns `{"modules": [...], "next": "..."}`, and `next` is empty on the last
+page. A module document accepts `?limit=` to trim the version list to the
+newest N, or `?versions=none` for labels and counts only.
 
 `{version}` accepts a version, a label or `latest`.
 
@@ -113,6 +123,13 @@ Status codes worth knowing:
 - **409** either the version exists with *different* content, or the push
   breaks compatibility; the body carries the `buf breaking` findings;
 - **400** a digest in the manifest does not match the uploaded bytes.
+
+## Yanked versions
+
+A yanked version disappears from `@v/list`, `@latest`, the Composer package
+document and the npm packument, and is marked `data-yanked` in the PyPI index
+(PEP 592). Direct downloads keep working, so a lock file that pins it still
+resolves. Labels pointing at a version are dropped when it is yanked.
 
 ## Versions
 

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,8 +60,26 @@ func TestComposerMetadataAndDownload(t *testing.T) {
 	ts := httptest.NewServer(http.StripPrefix("/composer", composerrepo.New(c, "")))
 	defer ts.Close()
 
+	// Composer 2 reads the root first, then one document per package. Serving
+	// every version inline would mean downloading the whole registry on each
+	// `composer update`.
+	var root struct {
+		MetadataURL       string   `json:"metadata-url"`
+		AvailablePackages []string `json:"available-packages"`
+	}
+	rootBody := fetch(t, ts.URL+"/composer/packages.json", http.StatusOK)
+	if err := json.Unmarshal([]byte(rootBody), &root); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(root.MetadataURL, "/composer/p2/%package%.json") {
+		t.Errorf("metadata-url = %q", root.MetadataURL)
+	}
+	if len(root.AvailablePackages) != 1 || root.AvailablePackages[0] != "acme/catalog-proto" {
+		t.Errorf("available-packages = %v", root.AvailablePackages)
+	}
+
 	var doc struct {
-		Packages map[string]map[string]struct {
+		Packages map[string][]struct {
 			Name     string
 			Version  string
 			Require  map[string]string
@@ -69,13 +88,17 @@ func TestComposerMetadataAndDownload(t *testing.T) {
 			Dist     struct{ URL, Shasum, Reference, Type string }
 		}
 	}
-	body := fetch(t, ts.URL+"/composer/packages.json", http.StatusOK)
+	body := fetch(t, ts.URL+"/composer/p2/acme/catalog-proto.json", http.StatusOK)
 	if err := json.Unmarshal([]byte(body), &doc); err != nil {
 		t.Fatal(err)
 	}
-	v, ok := doc.Packages["acme/catalog-proto"]["1.0.0"]
-	if !ok {
-		t.Fatalf("packages.json = %s", body)
+	versions := doc.Packages["acme/catalog-proto"]
+	if len(versions) != 1 {
+		t.Fatalf("package document = %s", body)
+	}
+	v := versions[0]
+	if v.Version != "1.0.0" {
+		t.Errorf("version = %q", v.Version)
 	}
 	if v.Require["php"] != ">=8.1" || v.Autoload == nil || len(v.License) != 1 {
 		t.Errorf("metadata lost: %+v", v)
@@ -94,6 +117,12 @@ func TestComposerMetadataAndDownload(t *testing.T) {
 	}
 	fetch(t, ts.URL+"/composer/dist/acme/catalog/v9.9.9.zip", http.StatusNotFound)
 	fetch(t, ts.URL+"/composer/nonsense", http.StatusNotFound)
+	fetch(t, ts.URL+"/composer/p2/acme/unknown.json", http.StatusNotFound)
+	// Composer also asks for a ~dev variant; an empty document keeps its log
+	// clean.
+	if devDoc := fetch(t, ts.URL+"/composer/p2/acme/catalog-proto~dev.json", http.StatusOK); !strings.Contains(devDoc, "acme/catalog-proto") {
+		t.Errorf("~dev document = %q", devDoc)
+	}
 }
 
 func TestNPMPackumentAndTarball(t *testing.T) {

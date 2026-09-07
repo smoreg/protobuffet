@@ -248,6 +248,13 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// listLimit bounds a page. Without it, a registry with thousands of modules
+// answers every listing with megabytes of JSON.
+const (
+	defaultListLimit = 100
+	maxListLimit     = 1000
+)
+
 func (s *Server) listModules(w http.ResponseWriter, r *http.Request) {
 	mods, err := s.catalog.ListModules()
 	if err != nil {
@@ -260,8 +267,21 @@ func (s *Server) listModules(w http.ResponseWriter, r *http.Request) {
 		Latest   string    `json:"latest,omitempty"`
 		Updated  time.Time `json:"updated"`
 	}
-	out := make([]entry, 0, len(mods))
+	limit := listLimit(r)
+	cursor := r.URL.Query().Get("cursor")
+
+	out := make([]entry, 0, limit)
+	next := ""
 	for _, m := range mods {
+		// Modules are sorted by name, so the cursor is simply the name to
+		// resume after.
+		if cursor != "" && m.String() <= cursor {
+			continue
+		}
+		if len(out) == limit {
+			next = out[len(out)-1].Module
+			break
+		}
 		idx, err := s.catalog.Index(m)
 		if err != nil {
 			continue
@@ -272,7 +292,19 @@ func (s *Server) listModules(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, e)
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, struct {
+		Modules []entry `json:"modules"`
+		Next    string  `json:"next,omitempty"`
+	}{Modules: out, Next: next})
+}
+
+func listLimit(r *http.Request) int {
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return min(n, maxListLimit)
+		}
+	}
+	return defaultListLimit
 }
 
 func moduleFrom(r *http.Request) (registry.Module, error) {
@@ -288,6 +320,24 @@ func (s *Server) getModule(w http.ResponseWriter, r *http.Request) {
 	idx, err := s.catalog.Index(m)
 	if err != nil {
 		httpError(w, err)
+		return
+	}
+	// A module with thousands of CI pushes has a large version list; callers
+	// that only need the labels can skip it.
+	if r.URL.Query().Get("versions") == "none" {
+		writeJSON(w, http.StatusOK, struct {
+			Module   registry.Module   `json:"module"`
+			Labels   map[string]string `json:"labels,omitempty"`
+			Updated  time.Time         `json:"updated"`
+			Versions int               `json:"version_count"`
+		}{Module: idx.Module, Labels: idx.Labels, Updated: idx.Updated, Versions: len(idx.Versions)})
+		return
+	}
+	if limit := listLimit(r); len(idx.Versions) > limit {
+		trimmed := *idx
+		// Newest versions are what a caller paging through wants first.
+		trimmed.Versions = idx.Versions[len(idx.Versions)-limit:]
+		writeJSON(w, http.StatusOK, trimmed)
 		return
 	}
 	writeJSON(w, http.StatusOK, idx)

@@ -349,3 +349,69 @@ func snapshot(t *testing.T, dir string) map[string]string {
 	}
 	return out
 }
+
+func TestSchemaArchiveCoversEveryModuleInBufYaml(t *testing.T) {
+	dir := t.TempDir()
+	// A v2 workspace with two modules: an archive holding only the directory
+	// named in buffet.yaml would make the server compare an incomplete schema.
+	write(t, dir, "buf.yaml", "version: v2\nmodules:\n  - path: proto\n  - path: vendor-protos\n")
+	write(t, dir, "proto/catalog/v1/catalog.proto", "syntax = \"proto3\";\n")
+	write(t, dir, "vendor-protos/shared/v1/money.proto", "syntax = \"proto3\";\n")
+	write(t, dir, "gen/go/api.pb.go", "package x\n")
+	write(t, dir, "buffet.yaml", `
+version: v1
+module: acme/catalog
+proto: proto
+targets:
+  go: {module: registry.test/gen/go/acme/catalog, template: t, out: gen/go}
+`)
+	m, err := config.LoadModule(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := SchemaArchive(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, n := range zipNames(t, body) {
+		got[n] = true
+	}
+	for _, want := range []string{
+		"buf.yaml",
+		"proto/catalog/v1/catalog.proto",
+		"vendor-protos/shared/v1/money.proto",
+	} {
+		if !got[want] {
+			t.Errorf("archive missing %q", want)
+		}
+	}
+	if got["gen/go/api.pb.go"] {
+		t.Error("archive contains generated code")
+	}
+}
+
+func TestSchemaArchiveWithoutBufYaml(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "proto/catalog/v1/catalog.proto", "syntax = \"proto3\";\n")
+	write(t, dir, "buffet.yaml", `
+version: v1
+module: acme/catalog
+proto: proto
+targets:
+  go: {module: registry.test/gen/go/acme/catalog, template: t, out: gen/go}
+`)
+	write(t, dir, "gen/go/x.go", "package x\n")
+	m, err := config.LoadModule(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := SchemaArchive(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := zipNames(t, body)
+	if len(names) != 1 || names[0] != "proto/catalog/v1/catalog.proto" {
+		t.Errorf("archive = %v", names)
+	}
+}

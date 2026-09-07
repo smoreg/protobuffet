@@ -54,7 +54,7 @@ func TestYankHidesButKeepsDownloadable(t *testing.T) {
 	})
 
 	t.Run("composer and npm hide it", func(t *testing.T) {
-		if pkgs := get(t, ts.URL+"/composer/packages.json"); strings.Contains(pkgs, `"1.1.0"`) {
+		if pkgs := get(t, ts.URL+"/composer/p2/acme/catalog-proto.json"); strings.Contains(pkgs, `"1.1.0"`) {
 			t.Error("composer still lists the yanked version")
 		}
 		if doc := get(t, ts.URL+"/npm/@acme%2fcatalog"); strings.Contains(doc, `"1.1.0"`) {
