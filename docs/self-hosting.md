@@ -52,7 +52,13 @@ Composer uses `auth.json`:
 composer config --global http-basic.registry.example.com buffet <read token>
 ```
 
-Both send HTTP basic auth, which the server accepts as an alternative to
+pip takes credentials in the index URL:
+
+```sh
+pip install --index-url https://buffet:<read token>@registry.example.com/pypi/simple acme-catalog-proto
+```
+
+All three send HTTP basic auth, which the server accepts as an alternative to
 `Authorization: Bearer`.
 
 ## Behind a reverse proxy
@@ -102,6 +108,16 @@ data/modules/<owner>/<name>/versions/<version>/schema.zip
 data/modules/<owner>/<name>/versions/<version>/go.zip
 data/modules/<owner>/<name>/versions/<version>/composer.zip
 data/modules/<owner>/<name>/versions/<version>/npm.tgz
+```
+
+## Toolchain on the publishing side
+
+Publishing runs `buf` on the client. PHP and Python generation additionally
+need the `protoc` binary, because their generators are built into protoc rather
+than shipped as standalone plugins:
+
+```sh
+apt install protobuf-compiler     # or: brew install protobuf
 ```
 
 ## Compatibility checks

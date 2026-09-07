@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -121,5 +122,57 @@ func TestExtractZipRefusesTraversal(t *testing.T) {
 
 	if err := ExtractZip(buf.Bytes(), t.TempDir(), false); err == nil {
 		t.Fatal("a zip entry escaping the destination was extracted")
+	}
+}
+
+func TestWheelLayout(t *testing.T) {
+	dir := writeTree(t, map[string]string{"catalog/v1/catalog_pb2.py": "# generated\n"})
+	body, err := Wheel(dir, WheelMeta{
+		Name:           "acme-catalog-proto",
+		Version:        "1.0.0",
+		RequiresDist:   []string{"protobuf>=5.27"},
+		RequiresPython: ">=3.8",
+	}, SkipHidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, _ := io.ReadAll(rc)
+		rc.Close()
+		got[f.Name] = string(content)
+	}
+	for _, want := range []string{
+		"catalog/v1/catalog_pb2.py",
+		"acme_catalog_proto-1.0.0.dist-info/METADATA",
+		"acme_catalog_proto-1.0.0.dist-info/WHEEL",
+		"acme_catalog_proto-1.0.0.dist-info/RECORD",
+	} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("wheel is missing %s", want)
+		}
+	}
+	if md := got["acme_catalog_proto-1.0.0.dist-info/METADATA"]; !strings.Contains(md, "Requires-Dist: protobuf>=5.27") {
+		t.Errorf("METADATA = %q", md)
+	}
+	// RECORD must cover every file, including itself with an empty digest.
+	record := got["acme_catalog_proto-1.0.0.dist-info/RECORD"]
+	if !strings.Contains(record, "catalog/v1/catalog_pb2.py,sha256=") ||
+		!strings.Contains(record, "dist-info/RECORD,,") {
+		t.Errorf("RECORD = %q", record)
+	}
+	if name := WheelFilename("acme-catalog-proto", "1.0.0"); name != "acme_catalog_proto-1.0.0-py3-none-any.whl" {
+		t.Errorf("WheelFilename = %q", name)
+	}
+	if n := NormalizePythonName("Acme.Catalog_Proto"); n != "acme-catalog-proto" {
+		t.Errorf("NormalizePythonName = %q", n)
 	}
 }

@@ -80,6 +80,17 @@ func buildFixture(t *testing.T, version string) (api.PublishManifest, map[string
 		t.Fatal(err)
 	}
 
+	pyDir := t.TempDir()
+	writeFile(t, filepath.Join(pyDir, "catalog/v1/catalog_pb2.py"), "# generated\n")
+	wheel, err := pack.Wheel(pyDir, pack.WheelMeta{
+		Name:           "acme-catalog-proto",
+		Version:        registry.PythonVersion(version),
+		RequiresPython: ">=3.8",
+	}, pack.SkipHidden)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	man := api.PublishManifest{
 		Module:       "acme/catalog",
 		Version:      version,
@@ -91,6 +102,8 @@ func buildFixture(t *testing.T, version string) (api.PublishManifest, map[string
 				Meta: map[string]any{"require": map[string]any{"php": ">=8.1"}, "autoload": map[string]any{"classmap": []any{"."}}}},
 			{Target: registry.TargetNPM, Name: "@acme/catalog", Version: registry.EcosystemVersion(version), File: "npm.tgz",
 				Meta: map[string]any{"dependencies": map[string]any{"@bufbuild/protobuf": "^2.2.0"}}},
+			{Target: registry.TargetPython, Name: "acme-catalog-proto", Version: registry.PythonVersion(version), File: "python.whl",
+				SHA256: registry.SHA256Hex(wheel), Meta: map[string]any{"requires_python": ">=3.8"}},
 		},
 	}
 	files := map[string][]byte{
@@ -98,6 +111,7 @@ func buildFixture(t *testing.T, version string) (api.PublishManifest, map[string
 		"go.zip":       goZip,
 		"composer.zip": phpZip,
 		"npm.tgz":      tgz,
+		"python.whl":   wheel,
 	}
 	return man, files
 }
@@ -201,6 +215,31 @@ func TestPublishAndServeEveryEcosystem(t *testing.T) {
 		tarball := doc.Versions["1.0.0"].Dist.Tarball
 		if body := get(t, tarball); len(body) < 50 {
 			t.Errorf("tarball %q is %d bytes", tarball, len(body))
+		}
+	})
+
+	t.Run("pypi simple index", func(t *testing.T) {
+		root := get(t, ts.URL+"/pypi/simple")
+		if !strings.Contains(root, "/pypi/simple/acme-catalog-proto/") {
+			t.Errorf("index root = %q", root)
+		}
+		project := get(t, ts.URL+"/pypi/simple/acme-catalog-proto/")
+		if !strings.Contains(project, "acme_catalog_proto-1.0.0-py3-none-any.whl") {
+			t.Fatalf("project page = %q", project)
+		}
+		// pip verifies the fragment digest after downloading.
+		if !strings.Contains(project, "#sha256=") {
+			t.Error("project page has no sha256 fragment")
+		}
+		start := strings.Index(project, `href="`) + len(`href="`)
+		end := strings.Index(project[start:], `"`) + start
+		href := project[start:end]
+		if body := get(t, strings.Split(href, "#")[0]); len(body) < 200 {
+			t.Errorf("wheel download is %d bytes", len(body))
+		}
+		// pip normalizes the requested name, so an unnormalized path must work.
+		if page := get(t, ts.URL+"/pypi/simple/Acme.Catalog_Proto/"); !strings.Contains(page, ".whl") {
+			t.Error("unnormalized project name did not resolve")
 		}
 	})
 

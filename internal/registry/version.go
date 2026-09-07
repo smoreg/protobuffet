@@ -45,6 +45,24 @@ func NormalizeVersion(s string) (string, error) {
 // ecosystem expects: Composer and npm both reject the leading v.
 func EcosystemVersion(v string) string { return strings.TrimPrefix(v, "v") }
 
+// PythonVersion converts a registry version to PEP 440, which is stricter than
+// semver: it has no place for a dash, so a pseudo-version becomes a dev
+// release and a prerelease tag loses its separators (v1.2.3-rc.1 -> 1.2.3rc1).
+func PythonVersion(v string) string {
+	base := EcosystemVersion(v)
+	if IsPseudo(v) {
+		parts := strings.SplitN(base, "-", 3)
+		if len(parts) >= 2 {
+			return parts[0] + ".dev" + parts[1]
+		}
+	}
+	release, pre, found := strings.Cut(base, "-")
+	if !found {
+		return base
+	}
+	return release + strings.NewReplacer(".", "", "-", "").Replace(pre)
+}
+
 // CompareVersions orders two registry versions by semver precedence.
 func CompareVersions(a, b string) int { return semver.Compare(a, b) }
 

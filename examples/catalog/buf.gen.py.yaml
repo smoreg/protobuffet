@@ -1,0 +1,10 @@
+# Python generation through protoc's built-in generator, plus type stubs so
+# editors and mypy see the generated messages.
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  - protoc_builtin: python
+    out: gen/python
+  - protoc_builtin: pyi
+    out: gen/python

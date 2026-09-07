@@ -1,30 +1,79 @@
 # Contributing
 
-Bug reports, questions and patches are welcome.
+Patches, bug reports and questions are all welcome.
+
+## Get it running
+
+```sh
+git clone https://github.com/smoreg/protobuffet
+cd protobuffet
+make build
+BUFFET_ADMIN_TOKEN=dev ./bin/buffetd -data /tmp/protobuffet-data
+```
+
+In another shell:
+
+```sh
+export BUFFET_REGISTRY=http://localhost:8080 BUFFET_TOKEN=dev
+./bin/buffet publish -config examples/catalog -version v0.1.0 -label main
+./bin/buffet list
+```
 
 ## Before opening a pull request
 
 ```sh
-make lint    # go vet plus a gofmt check
-make test    # unit and integration tests
-make e2e     # the real go/composer round trip, needs buf and protoc-gen-go
+make lint   # go vet plus a gofmt check
+make test   # unit and integration tests, no external tools needed
+make e2e    # the real go/pip/composer round trip
 ```
 
-## What makes a change easy to accept
+`make e2e` needs `buf`, `protoc` and `protoc-gen-go`:
 
-- **A test that fails without the change.** The registry serves three
-  package-manager protocols; a protocol change without a test is a change
-  nobody can verify.
-- **No new dependencies** unless they carry real weight. The server currently
-  depends on `golang.org/x/mod` and `gopkg.in/yaml.v3`, and that is meant to
-  stay unremarkable.
-- **Compatibility with the published protocols.** Go, Composer and npm
-  clients are the specification here, not our reading of it. If a change
-  affects what they see, `make e2e` must still pass.
+```sh
+go install github.com/bufbuild/buf/cmd/buf@latest
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+brew install protobuf          # or: apt install protobuf-compiler
+```
 
-## Scope
+## Where things live
 
-protobuffet stores and serves schemas. Code generation belongs to `buf` and
-lives on the client side; proposals that move generation into the server will
-be turned down, because they turn the registry into an arbitrary code
-execution service.
+| Path | What it does |
+|---|---|
+| `cmd/buffet` | the CLI |
+| `cmd/buffetd` | the server |
+| `internal/registry` | modules, versions, filesystem storage |
+| `internal/pack` | zip, tarball, Go module zip, Python wheel |
+| `internal/publish` | generation and packing on the client side |
+| `internal/gomodproxy` `internal/pypirepo` `internal/composerrepo` `internal/npmrepo` | one package-manager protocol each |
+| `internal/api` | HTTP routes, auth, the browsing UI |
+| `internal/buftool` | wrapper around the buf binary |
+
+## Adding a package ecosystem
+
+Every ecosystem is the same six steps. Follow how Python was added if you want
+a worked example:
+
+1. `internal/pack` — build the archive format (wheel, gem, jar…).
+2. `internal/registry/module.go` — add the `Target` constant.
+3. `internal/registry/version.go` — map registry versions to that ecosystem's
+   version syntax, if it differs from semver.
+4. `internal/config/module.go` — add the target struct and its validation.
+5. `internal/publish/publish.go` — generate, pack, return an `Artifact`.
+6. `internal/<name>repo` — serve the protocol, then mount it in
+   `internal/api/server.go` and add an install snippet to `internal/api/ui.go`.
+
+Then a test in `internal/api/server_test.go` and a step in `e2e/e2e.sh` that
+installs the package with the real client. The client is the specification; our
+reading of the spec is not.
+
+## What gets a change merged quickly
+
+- A test that fails without it.
+- No new dependencies unless they carry real weight. The server depends on
+  `golang.org/x/mod` and `gopkg.in/yaml.v3`, and that should stay boring.
+- `make e2e` still passing, because that is what proves the protocols work.
+
+## Out of scope
+
+Code generation stays on the client. Proposals that move it into the server
+turn a registry into a remote code execution service, and will be declined.

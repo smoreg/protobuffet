@@ -30,6 +30,7 @@ type Targets struct {
 	Go       *GoTarget       `yaml:"go"`
 	Composer *ComposerTarget `yaml:"composer"`
 	NPM      *NPMTarget      `yaml:"npm"`
+	Python   *PythonTarget   `yaml:"python"`
 }
 
 // GoTarget publishes a Go module through the registry's module proxy.
@@ -67,6 +68,17 @@ type NPMTarget struct {
 	Dependencies map[string]string `yaml:"dependencies"`
 	License      string            `yaml:"license"`
 	Type         string            `yaml:"type"`
+}
+
+// PythonTarget publishes a wheel through the registry's PyPI index.
+type PythonTarget struct {
+	Package  string `yaml:"package"`
+	Template string `yaml:"template"`
+	Out      string `yaml:"out"`
+	// Requires lists dependencies in PEP 508 form, e.g. "protobuf>=5.27".
+	Requires       []string `yaml:"requires"`
+	RequiresPython string   `yaml:"requires_python"`
+	License        string   `yaml:"license"`
 }
 
 // LoadModule reads a module config. Path may be a directory or a file.
@@ -109,7 +121,7 @@ func (m *Module) validate() error {
 	if m.Proto == "" {
 		m.Proto = "."
 	}
-	if m.Targets.Go == nil && m.Targets.Composer == nil && m.Targets.NPM == nil {
+	if m.Targets.Go == nil && m.Targets.Composer == nil && m.Targets.NPM == nil && m.Targets.Python == nil {
 		return fmt.Errorf("at least one target is required")
 	}
 	if t := m.Targets.Go; t != nil {
@@ -131,6 +143,14 @@ func (m *Module) validate() error {
 	if t := m.Targets.NPM; t != nil {
 		if t.Package == "" || t.Out == "" || t.Template == "" {
 			return fmt.Errorf("targets.npm: package, template and out are required")
+		}
+	}
+	if t := m.Targets.Python; t != nil {
+		if t.Package == "" || t.Out == "" || t.Template == "" {
+			return fmt.Errorf("targets.python: package, template and out are required")
+		}
+		if t.RequiresPython == "" {
+			t.RequiresPython = ">=3.8"
 		}
 	}
 	return nil

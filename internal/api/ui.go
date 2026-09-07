@@ -194,6 +194,12 @@ func installSnippets(v registry.Version, base string) []uiInstall {
 			Body:  "npm install " + a.Name + "@" + a.Version + " --registry " + base + "/npm",
 		})
 	}
+	if a, ok := v.Artifact(registry.TargetPython); ok {
+		out = append(out, uiInstall{
+			Title: "Python (pip)",
+			Body:  "pip install --index-url " + base + "/pypi/simple " + a.Name + "==" + a.Version,
+		})
+	}
 	return out
 }
 

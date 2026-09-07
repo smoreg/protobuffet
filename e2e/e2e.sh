@@ -99,6 +99,31 @@ else
   echo "skipped: composer or php not installed"
 fi
 
+step "consume the Python wheel with the real pip client"
+if command -v python3 >/dev/null; then
+  # --system-site-packages so a protobuf runtime already on the machine is
+  # reused; --no-deps keeps the test pointed at our index instead of PyPI.
+  python3 -m venv --system-site-packages "$TMP/venv"
+  "$TMP/venv/bin/pip" install --quiet --no-deps \
+    --index-url "${REGISTRY}/pypi/simple" "acme-catalog-proto==1.0.0"
+  "$TMP/venv/bin/pip" show acme-catalog-proto | grep -E "^(Name|Version):"
+
+  if "$TMP/venv/bin/python" -c "import google.protobuf" 2>/dev/null; then
+    "$TMP/venv/bin/python" - <<'PYEOF'
+from catalog.v1 import catalog_pb2
+
+product = catalog_pb2.Product(sku="TEA-001", title="Pu-erh 2019", price_minor=4500, currency="GEL")
+assert product.sku == "TEA-001"
+print("python consumer ran against the registry wheel:", product.sku, product.price_minor)
+PYEOF
+  else
+    "$TMP/venv/bin/python" -c "import pathlib,sys; p=[x for x in sys.path if 'site-packages' in x][0]; assert (pathlib.Path(p)/'catalog'/'v1'/'catalog_pb2.py').exists()"
+    echo "wheel installed from the registry (import skipped: no protobuf runtime available)"
+  fi
+else
+  echo "skipped: python3 not installed"
+fi
+
 step "the registry refuses a breaking change"
 cp -R examples/catalog "$TMP/breaking"
 # Renaming a field changes the contract for every consumer already on v1.0.0.

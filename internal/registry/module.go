@@ -16,10 +16,11 @@ const (
 	TargetGo       Target = "go"
 	TargetComposer Target = "composer"
 	TargetNPM      Target = "npm"
+	TargetPython   Target = "python"
 )
 
 // AllTargets lists every supported ecosystem, in a stable order.
-var AllTargets = []Target{TargetGo, TargetComposer, TargetNPM}
+var AllTargets = []Target{TargetGo, TargetComposer, TargetNPM, TargetPython}
 
 var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 

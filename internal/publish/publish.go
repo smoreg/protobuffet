@@ -127,6 +127,14 @@ func Prepare(ctx context.Context, buf *buftool.Buf, m *config.Module, opts Optio
 		b.Artifacts = append(b.Artifacts, art)
 		b.Files[art.File] = body
 	}
+	if t := m.Targets.Python; t != nil {
+		art, body, err := buildPython(ctx, buf, m, t, version, opts.SkipGenerate)
+		if err != nil {
+			return nil, fmt.Errorf("target python: %w", err)
+		}
+		b.Artifacts = append(b.Artifacts, art)
+		b.Files[art.File] = body
+	}
 	return b, nil
 }
 
@@ -285,6 +293,48 @@ func buildNPM(ctx context.Context, buf *buftool.Buf, m *config.Module, t *config
 		SHA1:    sha1hex(tgz),
 		Meta:    meta,
 	}, tgz, nil
+}
+
+func buildPython(ctx context.Context, buf *buftool.Buf, m *config.Module, t *config.PythonTarget, version string, skip bool) (registry.Artifact, []byte, error) {
+	if err := generate(ctx, buf, m, t.Template, skip); err != nil {
+		return registry.Artifact{}, nil, err
+	}
+	pkgVersion := registry.PythonVersion(version)
+	wheel, err := pack.Wheel(m.Path(t.Out), pack.WheelMeta{
+		Name:           t.Package,
+		Version:        pkgVersion,
+		Summary:        fmt.Sprintf("Generated protobuf code for %s", m.Module),
+		RequiresDist:   t.Requires,
+		RequiresPython: t.RequiresPython,
+		License:        t.License,
+	}, pack.SkipHidden)
+	if err != nil {
+		return registry.Artifact{}, nil, err
+	}
+	meta := map[string]any{"requires_python": t.RequiresPython}
+	if len(t.Requires) > 0 {
+		meta["requires"] = toAnySlice(t.Requires)
+	}
+	if t.License != "" {
+		meta["license"] = t.License
+	}
+	return registry.Artifact{
+		Target:  registry.TargetPython,
+		Name:    t.Package,
+		Version: pkgVersion,
+		File:    "python.whl",
+		SHA256:  registry.SHA256Hex(wheel),
+		SHA1:    sha1hex(wheel),
+		Meta:    meta,
+	}, wheel, nil
+}
+
+func toAnySlice(in []string) []any {
+	out := make([]any, len(in))
+	for i, v := range in {
+		out[i] = v
+	}
+	return out
 }
 
 func toAnyMap(in map[string]string) map[string]any {

@@ -19,6 +19,7 @@ import (
 	"github.com/smoreg/protobuffet/internal/config"
 	"github.com/smoreg/protobuffet/internal/gomodproxy"
 	"github.com/smoreg/protobuffet/internal/npmrepo"
+	"github.com/smoreg/protobuffet/internal/pypirepo"
 	"github.com/smoreg/protobuffet/internal/registry"
 )
 
@@ -59,6 +60,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /go/", read(http.StripPrefix("/go/", gomodproxy.New(s.store))))
 	s.mux.Handle("GET /composer/", read(http.StripPrefix("/composer", composerrepo.New(s.store, s.cfg.BaseURL))))
 	s.mux.Handle("GET /npm/", read(npmrepo.New(s.store, s.cfg.BaseURL)))
+	s.mux.Handle("GET /pypi/", read(pypirepo.New(s.store, s.cfg.BaseURL)))
 
 	s.mux.Handle("GET /api/v1/modules", read(http.HandlerFunc(s.listModules)))
 	s.mux.Handle("GET /api/v1/modules/{owner}/{name}", read(http.HandlerFunc(s.getModule)))

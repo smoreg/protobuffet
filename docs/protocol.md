@@ -1,6 +1,6 @@
 # What the registry serves
 
-Three package-manager protocols and one small HTTP API. This document is what
+Four package-manager protocols and one small HTTP API. This document is what
 you need to debug a consumer that is not resolving.
 
 ## Go module proxy
@@ -51,6 +51,31 @@ Mounted at `/npm`:
   from the raw escaped path;
 - `/npm/dist/<owner>/<name>/<version>.tgz` — the tarball, with every entry
   under the `package/` prefix npm requires.
+
+## PyPI simple index
+
+Mounted at `/pypi`, implementing [PEP 503](https://peps.python.org/pep-0503/):
+
+- `/pypi/simple/` — every published project;
+- `/pypi/simple/<name>/` — the files of one project, each link carrying a
+  `#sha256=` fragment that pip verifies after download;
+- `/pypi/files/<owner>/<name>/<version>/<file>.whl` — the wheel.
+
+```sh
+pip install --index-url https://registry.example.com/pypi/simple \
+            --extra-index-url https://pypi.org/simple acme-catalog-proto
+```
+
+Project names are matched after PEP 503 normalization, so `Acme.Catalog_Proto`
+and `acme-catalog-proto` resolve to the same package.
+
+Artifacts are pure-Python wheels (`py3-none-any`), built with a `dist-info`
+directory containing `METADATA`, `WHEEL` and a `RECORD` that lists every file
+with its digest. Installing one is unzipping it: no setuptools, no build step.
+
+Versions follow PEP 440 rather than semver: `v1.2.3` becomes `1.2.3`,
+`v2.0.0-rc.1` becomes `2.0.0rc1`, and a pseudo-version becomes
+`0.0.0.dev<timestamp>`.
 
 ## Registry API
 

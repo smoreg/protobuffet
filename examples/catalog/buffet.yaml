@@ -12,6 +12,15 @@ targets:
     require:
       - google.golang.org/protobuf v1.36.12
 
+  python:
+    package: acme-catalog-proto
+    template: buf.gen.py.yaml
+    out: gen/python
+    requires:
+      - "protobuf>=5.27"
+    requires_python: ">=3.8"
+    license: Apache-2.0
+
   composer:
     package: acme/catalog-proto
     template: buf.gen.php.yaml

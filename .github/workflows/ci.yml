@@ -30,6 +30,10 @@ jobs:
         with:
           php-version: "8.2"
           tools: composer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "protobuf>=5.27"
       - name: install toolchain
         run: |
           go install github.com/bufbuild/buf/cmd/buf@v1.72.0

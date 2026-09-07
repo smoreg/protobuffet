@@ -45,3 +45,16 @@ func TestNormalizeVersion(t *testing.T) {
 		t.Errorf("EcosystemVersion = %q", got)
 	}
 }
+
+func TestPythonVersionIsPEP440(t *testing.T) {
+	cases := map[string]string{
+		"v1.2.3":                             "1.2.3",
+		"v2.0.0-rc.1":                        "2.0.0rc1",
+		"v0.0.0-20260907150405-abcdef012345": "0.0.0.dev20260907150405",
+	}
+	for in, want := range cases {
+		if got := PythonVersion(in); got != want {
+			t.Errorf("PythonVersion(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
