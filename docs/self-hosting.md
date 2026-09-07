@@ -105,6 +105,52 @@ needs another certificate reload implementation.
 Without TLS, Composer refuses plain-HTTP repositories unless the consumer sets
 `"secure-http": false`, and that is a reasonable thing for it to insist on.
 
+## Rotating credentials
+
+Keep tokens in their own file so they can be replaced without a restart:
+
+```yaml
+tokens_file: /etc/protobuffet/tokens.yaml
+```
+
+```sh
+# write the new file, then
+kill -HUP $(pidof buffetd)      # or: kubectl exec deploy/protobuffet -- kill -HUP 1
+```
+
+A reload that fails validation is refused and the running set stays in place,
+so a typo cannot lock everyone out. On the client side, CI should pass the
+credential as `BUFFET_TOKEN` or point `BUFFET_TOKEN_FILE` at a mounted secret;
+`buffet login` stores it in plain text and is meant for developer machines.
+
+## Garbage collection
+
+Every push without a tag creates a pseudo-version. Without a policy they
+accumulate one per CI run:
+
+```yaml
+retention:
+  keep_pseudo_versions: 50
+  keep_pseudo_days: 90
+```
+
+```sh
+buffetd -gc -dry-run    # report what would go
+buffetd -gc             # prune, then remove orphaned directories
+```
+
+Tagged versions and anything a label points at are never pruned. Run it as a
+CronJob against the same volume, or as a sidecar `kubectl exec`.
+
+## Audit log
+
+Publishes, label moves and yanks are appended to `<data>/audit.log` as JSON
+lines, and the last entries are available to an admin token:
+
+```sh
+curl -H "Authorization: Bearer $ADMIN" https://schemas.example.com/api/v1/audit?limit=50
+```
+
 ## Backups
 
 ```sh

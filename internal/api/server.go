@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/smoreg/protobuffet/internal/buftool"
@@ -38,6 +40,9 @@ type Server struct {
 	// publishing bounds concurrent publishes: each one holds archives in
 	// memory and runs buf.
 	publishing chan struct{}
+	audit      *auditLog
+	// tokens holds the live credential set, swapped on reload.
+	tokens atomic.Pointer[[]config.Token]
 }
 
 // New builds a server. In the default "required" mode a missing buf binary is
@@ -48,7 +53,12 @@ func New(cfg config.Server, catalog *registry.Catalog, log *slog.Logger) (*Serve
 		cfg: cfg, catalog: catalog, log: log,
 		mux: http.NewServeMux(), metrics: newMetrics(),
 		publishing: make(chan struct{}, cfg.MaxConcurrentPublishes),
+		// The audit log belongs next to the data it describes, so it moves
+		// with the volume and cannot drift from the store's location.
+		audit: newAuditLog(catalog.Root()),
 	}
+	tokens := cfg.Tokens
+	s.tokens.Store(&tokens)
 	if cfg.BreakingCheck.Enabled() {
 		b, err := buftool.Find(cfg.BufPath)
 		switch {
@@ -95,6 +105,7 @@ func (s *Server) routes() {
 		w.Write([]byte("ok\n")) //nolint:errcheck // a failed write means the client is gone
 	})
 	s.mux.Handle("GET /metrics", read(http.HandlerFunc(s.serveMetrics)))
+	s.mux.Handle("GET /api/v1/audit", admin(s.serveAudit))
 	s.mux.Handle("GET /", read(http.HandlerFunc(s.ui)))
 }
 
@@ -119,7 +130,7 @@ func (s *Server) logging(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-Id", reqID)
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		next.ServeHTTP(rec, r)
+		next.ServeHTTP(rec, r.WithContext(context.WithValue(r.Context(), requestIDKey, reqID)))
 
 		elapsed := time.Since(start)
 		s.metrics.observe(route(r.URL.Path), rec.status, elapsed)
@@ -132,6 +143,63 @@ func (s *Server) logging(next http.Handler) http.Handler {
 			"remote", remoteAddr(r),
 		)
 	})
+}
+
+// serveAudit returns the tail of the audit log, newest first.
+func (s *Server) serveAudit(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+	events, err := s.audit.tail(limit)
+	if err != nil {
+		httpError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+// recordAudit writes one event, filling in what the request knows.
+func (s *Server) recordAudit(r *http.Request, e auditEvent) {
+	e.RequestID = r.Header.Get("X-Request-Id")
+	if e.RequestID == "" {
+		e.RequestID = requestIDFrom(r)
+	}
+	e.Remote = remoteAddr(r)
+	if err := s.audit.record(e); err != nil {
+		// The action already happened; losing its audit line is worth a loud
+		// log, not a failed request.
+		s.log.Error("audit write failed", "action", e.Action, "module", e.Module, "err", err)
+	}
+}
+
+func subjectOf(r *http.Request) string {
+	if tok, ok := tokenFrom(r); ok {
+		return tok.Subject
+	}
+	return ""
+}
+
+func yankAction(yanked bool) string {
+	if yanked {
+		return "yank"
+	}
+	return "unyank"
+}
+
+func auditBreakingDetail(report *BreakingReport) string {
+	switch {
+	case report == nil:
+		return ""
+	case report.Overridden != "":
+		return "breaking, overridden: " + report.Overridden
+	case report.Checked:
+		return "checked against " + report.Against
+	default:
+		return report.Skipped
+	}
 }
 
 // serveMetrics renders counters plus two gauges taken from the catalog.
@@ -279,6 +347,10 @@ func (s *Server) setLabel(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err)
 		return
 	}
+	s.recordAudit(r, auditEvent{
+		Subject: subjectOf(r), Action: "label", Module: m.String(),
+		Version: body.Version, Label: r.PathValue("label"), Result: "ok",
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"label": r.PathValue("label"), "version": body.Version})
 }
 
@@ -314,6 +386,10 @@ func (s *Server) setYanked(w http.ResponseWriter, r *http.Request, yanked bool) 
 		httpError(w, err)
 		return
 	}
+	s.recordAudit(r, auditEvent{
+		Subject: subject, Action: yankAction(yanked), Module: m.String(),
+		Version: version, Result: "ok", Detail: body.Reason,
+	})
 	s.log.Warn("version yank state changed",
 		"module", m.String(), "version", version, "yanked", yanked, "by", subject, "reason", body.Reason)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -410,6 +486,10 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	}
 	if report != nil && report.Findings != "" && report.Overridden == "" {
 		s.metrics.publish("breaking")
+		s.recordAudit(r, auditEvent{
+			Subject: subjectOf(r), Action: "publish", Module: m.String(),
+			Version: man.Version, Result: "refused-breaking", Detail: report.Against,
+		})
 		writeJSON(w, http.StatusConflict, PublishResponse{Module: m.String(), Breaking: report})
 		return
 	}
@@ -434,6 +514,10 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	}
 	s.metrics.publish("ok")
 	s.log.Info("published", "module", m.String(), "version", version.Version, "by", subject)
+	s.recordAudit(r, auditEvent{
+		Subject: subject, Action: "publish", Module: m.String(),
+		Version: version.Version, Result: "ok", Detail: auditBreakingDetail(report),
+	})
 	writeJSON(w, http.StatusCreated, PublishResponse{Module: m.String(), Version: version, Breaking: report})
 }
 

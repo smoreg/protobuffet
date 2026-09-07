@@ -66,6 +66,12 @@ Then a test in `internal/api/server_test.go` and a step in `e2e/e2e.sh` that
 installs the package with the real client. The client is the specification; our
 reading of the spec is not.
 
+## Changelog
+
+Add a line to the `## Unreleased` section of `CHANGELOG.md` in the same pull
+request. Releases are cut by tagging `vX.Y.Z`; the tag builds binaries for
+Linux, macOS and Windows plus a multi-arch container image.
+
 ## What gets a change merged quickly
 
 - A test that fails without it.

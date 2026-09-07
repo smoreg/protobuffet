@@ -30,18 +30,18 @@ func main() {
 
 // build wires the store, the catalog and the HTTP server together. It is
 // separate from run so tests can exercise it without signals or a listener.
-func build(cfg config.Server, log *slog.Logger) (*http.Server, error) {
+func build(cfg config.Server, log *slog.Logger) (*http.Server, *api.Server, error) {
 	store, err := registry.NewStore(cfg.Data)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	catalog, err := registry.NewCatalog(store)
 	if err != nil {
-		return nil, fmt.Errorf("load registry: %w", err)
+		return nil, nil, fmt.Errorf("load registry: %w", err)
 	}
 	srv, err := api.New(cfg, catalog, log)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return &http.Server{
 		Addr:              cfg.Listen,
@@ -50,7 +50,40 @@ func build(cfg config.Server, log *slog.Logger) (*http.Server, error) {
 		// Uploads and downloads can be large and slow; the body limit is
 		// enforced per handler instead of by a write timeout.
 		IdleTimeout: 2 * time.Minute,
-	}, nil
+	}, srv, nil
+}
+
+// runGC prunes pseudo-versions and orphaned directories, then exits. Running
+// it as a CronJob keeps the volume from filling up with CI pushes.
+func runGC(cfg config.Server, log *slog.Logger, dryRun bool) error {
+	store, err := registry.NewStore(cfg.Data)
+	if err != nil {
+		return err
+	}
+	pruned, err := store.PrunePseudoVersions(registry.PruneOptions{
+		KeepNewest: cfg.Retention.KeepPseudoVersions,
+		MaxAge:     time.Duration(cfg.Retention.KeepPseudoDays) * 24 * time.Hour,
+		DryRun:     dryRun,
+	})
+	if err != nil {
+		return err
+	}
+	for _, p := range pruned {
+		log.Info("prune", "module", p.Module.String(), "version", p.Version, "reason", p.Reason, "dry_run", dryRun)
+	}
+	if dryRun {
+		log.Info("gc finished", "would_prune", len(pruned))
+		return nil
+	}
+	orphans, err := store.CleanOrphans()
+	if err != nil {
+		return err
+	}
+	for _, path := range orphans {
+		log.Info("removed orphaned directory", "path", path)
+	}
+	log.Info("gc finished", "pruned", len(pruned), "orphans", len(orphans))
+	return nil
 }
 
 // baseURLOrDerived makes the log line honest about the empty default.
@@ -63,6 +96,8 @@ func baseURLOrDerived(v string) string {
 
 func run() error {
 	var (
+		gc         = flag.Bool("gc", false, "prune pseudo-versions per the retention policy and exit")
+		dryRun     = flag.Bool("dry-run", false, "with -gc, report what would be removed")
 		configPath = flag.String("config", "", "path to buffetd.yaml (optional)")
 		listen     = flag.String("listen", "", "listen address, overrides the config")
 		data       = flag.String("data", "", "data directory, overrides the config")
@@ -88,13 +123,30 @@ func run() error {
 		cfg.Data = *data
 	}
 
-	httpSrv, err := build(cfg, log)
+	if *gc {
+		return runGC(cfg, log, *dryRun)
+	}
+
+	httpSrv, srv, err := build(cfg, log)
 	if err != nil {
 		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// SIGHUP rotates credentials in place; anything else would mean a restart
+	// and a window where publishes fail.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		for range hup {
+			if err := srv.ReloadTokens(); err != nil {
+				log.Error("token reload failed", "err", err)
+			}
+		}
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {

@@ -37,8 +37,14 @@ type Server struct {
 	// MaxConcurrentPublishes bounds how many pushes run at once. Each one
 	// unpacks archives and runs buf, so an unbounded number is an easy way to
 	// exhaust memory on a small node.
-	MaxConcurrentPublishes int     `yaml:"max_concurrent_publishes"`
-	Tokens                 []Token `yaml:"tokens"`
+	MaxConcurrentPublishes int `yaml:"max_concurrent_publishes"`
+	// Retention prunes pseudo-versions, which accumulate one per CI push.
+	Retention Retention `yaml:"retention"`
+	// TokensFile holds credentials separately from the rest of the config so
+	// they can be rotated without a restart (send SIGHUP) and mounted as a
+	// secret of their own.
+	TokensFile string  `yaml:"tokens_file"`
+	Tokens     []Token `yaml:"tokens"`
 }
 
 // BreakingMode says what happens when a push would break consumers, and what
@@ -84,6 +90,17 @@ func (m *BreakingMode) UnmarshalYAML(value *yaml.Node) error {
 
 // Enabled reports whether the check runs at all.
 func (m BreakingMode) Enabled() bool { return m != BreakingOff }
+
+// Retention decides which pseudo-versions to keep. Tagged versions and
+// anything a label points at are never pruned: those are releases, and
+// deleting one breaks the lock files that pin it.
+type Retention struct {
+	// KeepPseudoVersions keeps this many newest pseudo-versions per module.
+	// Zero disables pruning by count.
+	KeepPseudoVersions int `yaml:"keep_pseudo_versions"`
+	// KeepPseudoDays additionally prunes pseudo-versions older than this.
+	KeepPseudoDays int `yaml:"keep_pseudo_days"`
+}
 
 // BreakingPolicy says whether a major version bump may carry breaking changes.
 type BreakingPolicy string
@@ -192,7 +209,14 @@ func LoadServer(path string) (Server, error) {
 	if len(cfg.Tokens) == 0 {
 		return cfg, fmt.Errorf("no tokens configured: set BUFFET_ADMIN_TOKEN or list tokens in the config")
 	}
-	if err := cfg.validateTokens(); err != nil {
+	if cfg.TokensFile != "" {
+		fileTokens, err := LoadTokens(cfg.TokensFile)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.Tokens = append(cfg.Tokens, fileTokens...)
+	}
+	if err := cfg.ValidateTokens(); err != nil {
 		return cfg, err
 	}
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
@@ -214,7 +238,9 @@ func LoadServer(path string) (Server, error) {
 
 var validScopes = map[string]bool{"read": true, "write": true, "admin": true}
 
-func (s Server) validateTokens() error {
+// ValidateTokens checks a credential set, exported so a reload can reject a
+// bad file before swapping it in.
+func (s Server) ValidateTokens() error {
 	seen := map[string]bool{}
 	for i, t := range s.Tokens {
 		if t.Subject == "" {
@@ -244,6 +270,30 @@ func (s Server) validateTokens() error {
 		}
 	}
 	return nil
+}
+
+// tokensDoc is the shape of a tokens file.
+type tokensDoc struct {
+	Tokens []Token `yaml:"tokens"`
+}
+
+// LoadTokens reads a credentials file. It is separate from LoadServer so the
+// server can re-read it on SIGHUP without touching the rest of the config.
+func LoadTokens(path string) ([]Token, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var doc tokensDoc
+	dec := yaml.NewDecoder(bytesReader(body))
+	dec.KnownFields(true)
+	if err := dec.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(doc.Tokens) == 0 {
+		return nil, fmt.Errorf("%s contains no tokens", path)
+	}
+	return doc.Tokens, nil
 }
 
 // HashToken returns the hex sha256 of a token. Tokens are high-entropy random

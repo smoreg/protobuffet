@@ -43,7 +43,7 @@ usage:
 
 common flags:
   -registry URL   registry root (env BUFFET_REGISTRY)
-  -token TOKEN    API token (env BUFFET_TOKEN, or buffet login)
+  -token TOKEN    API token (env BUFFET_TOKEN, BUFFET_TOKEN_FILE, or buffet login)
   -config PATH    module config, default ./buffet.yaml
 `
 
@@ -123,6 +123,17 @@ func (f *registryFlags) client() (*client.Client, error) {
 	token := f.token
 	if token == "" {
 		token = os.Getenv("BUFFET_TOKEN")
+	}
+	// A file keeps the credential out of the process environment, which is
+	// what a mounted Kubernetes secret gives you for free.
+	if token == "" {
+		if path := os.Getenv("BUFFET_TOKEN_FILE"); path != "" {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read BUFFET_TOKEN_FILE: %w", err)
+			}
+			token = strings.TrimSpace(string(body))
+		}
 	}
 	if token == "" {
 		token = storedToken(url)
@@ -408,7 +419,8 @@ func cmdLogin(args []string, stdout io.Writer) error {
 	if err := os.WriteFile(path, append(body, '\n'), 0o600); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "token stored in %s\n", path) //nolint:errcheck
+	fmt.Fprintf(stdout, "token stored in %s\n", path)                                                  //nolint:errcheck
+	fmt.Fprintln(stdout, "it is stored in plain text; in CI prefer BUFFET_TOKEN or BUFFET_TOKEN_FILE") //nolint:errcheck
 	return nil
 }
 

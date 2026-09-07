@@ -177,6 +177,24 @@ func (c *Catalog) reload(m Module) error {
 	return c.claimNames(m, idx)
 }
 
+// PrunePseudoVersions applies the retention policy and refreshes the catalog.
+func (c *Catalog) PrunePseudoVersions(opts PruneOptions) ([]Pruned, error) {
+	pruned, err := c.store.PrunePseudoVersions(opts)
+	if err != nil || opts.DryRun {
+		return pruned, err
+	}
+	touched := map[string]Module{}
+	for _, p := range pruned {
+		touched[p.Module.String()] = p.Module
+	}
+	for _, m := range touched {
+		if err := c.reload(m); err != nil {
+			return pruned, err
+		}
+	}
+	return pruned, nil
+}
+
 // Open returns a stored file.
 func (c *Catalog) Open(m Module, version, file string) (readSeekCloser, int64, error) {
 	return c.store.Open(m, version, file)

@@ -45,6 +45,44 @@ func NormalizeVersion(s string) (string, error) {
 // ecosystem expects: Composer and npm both reject the leading v.
 func EcosystemVersion(v string) string { return strings.TrimPrefix(v, "v") }
 
+// ComposerVersion converts a registry version to what Composer accepts.
+// Composer's stability suffixes take a bare number: 1.2.3-RC1, not 1.2.3-rc.1,
+// and a dotted suffix is parsed as a different, lower version than intended.
+func ComposerVersion(v string) string {
+	base := EcosystemVersion(v)
+	release, pre, found := strings.Cut(base, "-")
+	if !found {
+		return base
+	}
+	// Pseudo-versions carry a timestamp and a digest; Composer reads them as
+	// a dev release, which is exactly what they are.
+	if IsPseudo(v) {
+		return release + "-dev." + strings.ReplaceAll(pre, "-", ".")
+	}
+	label, number := splitStability(pre)
+	switch label {
+	case "rc":
+		label = "RC"
+	case "alpha", "beta", "patch", "dev":
+	default:
+		// An unknown suffix would be read as a lower stability than release;
+		// keep it verbatim rather than guess.
+		return base
+	}
+	return release + "-" + label + number
+}
+
+// splitStability turns "rc.1", "beta2" or "alpha" into a label and a number.
+func splitStability(pre string) (label, number string) {
+	pre = strings.ToLower(pre)
+	for i, r := range pre {
+		if r >= '0' && r <= '9' {
+			return strings.Trim(pre[:i], ".-"), pre[i:]
+		}
+	}
+	return pre, "1"
+}
+
 // PythonVersion converts a registry version to PEP 440, which is stricter than
 // semver: it has no place for a dash, so a pseudo-version becomes a dev
 // release and a prerelease tag loses its separators (v1.2.3-rc.1 -> 1.2.3rc1).

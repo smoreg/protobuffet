@@ -24,6 +24,13 @@ breaking_check: required
 max_upload_bytes: 134217728       # 128 MiB per request
 max_concurrent_publishes: 4
 
+# Retention. Every push without a tag creates a pseudo-version; without a
+# policy they accumulate forever. Tagged versions and anything a label points
+# at are never pruned. Apply with: buffetd -gc  (add -dry-run to preview)
+retention:
+  keep_pseudo_versions: 50
+  keep_pseudo_days: 90
+
 # Mint credentials with: buffet token
 tokens:
   - subject: ci

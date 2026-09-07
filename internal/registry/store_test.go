@@ -355,3 +355,93 @@ func TestYankKeepsDownloadsAndClearsLabels(t *testing.T) {
 		t.Errorf("yank of a missing version: %v", err)
 	}
 }
+
+func TestPrunePseudoVersions(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	mod := Module{Owner: "acme", Name: "catalog"}
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+
+	pub := func(version string, age time.Duration, labels ...string) {
+		t.Helper()
+		if _, err := s.Publish(PublishRequest{
+			Module: mod, Version: version, SchemaZip: []byte(version),
+			Labels: labels, Now: now.Add(-age),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Three pseudo-versions and one release. The release and anything a label
+	// points at must survive whatever the policy says.
+	pub("v1.0.0", 200*24*time.Hour)
+	pub("v0.0.0-20260101000000-aaaaaaaaaaaa", 200*24*time.Hour)
+	pub("v0.0.0-20260801000000-bbbbbbbbbbbb", 30*24*time.Hour)
+	pub("v0.0.0-20260906000000-cccccccccccc", 24*time.Hour, "main")
+
+	dry, err := s.PrunePseudoVersions(PruneOptions{KeepNewest: 1, Now: now, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dry) != 1 || dry[0].Version != "v0.0.0-20260101000000-aaaaaaaaaaaa" {
+		t.Fatalf("dry run = %+v", dry)
+	}
+	// A dry run must change nothing.
+	if idx, _ := s.Index(mod); len(idx.Versions) != 4 {
+		t.Fatalf("dry run removed versions: %d left", len(idx.Versions))
+	}
+
+	pruned, err := s.PrunePseudoVersions(PruneOptions{KeepNewest: 1, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 1 {
+		t.Fatalf("pruned = %+v", pruned)
+	}
+	idx, _ := s.Index(mod)
+	remaining := map[string]bool{}
+	for _, v := range idx.Versions {
+		remaining[v.Version] = true
+	}
+	for _, want := range []string{
+		"v1.0.0",                             // a release
+		"v0.0.0-20260906000000-cccccccccccc", // labelled main
+		"v0.0.0-20260801000000-bbbbbbbbbbbb", // the newest unlabelled pseudo
+	} {
+		if !remaining[want] {
+			t.Errorf("%s was pruned", want)
+		}
+	}
+	// The files are gone too, not just the index entry.
+	if _, err := s.ReadAll(mod, "v0.0.0-20260101000000-aaaaaaaaaaaa", "schema.zip"); err == nil {
+		t.Error("pruned version is still readable")
+	}
+}
+
+func TestPruneByAge(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	mod := Module{Owner: "acme", Name: "catalog"}
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		version string
+		age     time.Duration
+	}{
+		{"v0.0.0-20260101000000-aaaaaaaaaaaa", 200 * 24 * time.Hour},
+		{"v0.0.0-20260901000000-bbbbbbbbbbbb", 6 * 24 * time.Hour},
+	} {
+		if _, err := s.Publish(PublishRequest{
+			Module: mod, Version: tc.version, SchemaZip: []byte(tc.version), Now: now.Add(-tc.age),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pruned, err := s.PrunePseudoVersions(PruneOptions{MaxAge: 90 * 24 * time.Hour, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pruned) != 1 || pruned[0].Version != "v0.0.0-20260101000000-aaaaaaaaaaaa" {
+		t.Fatalf("pruned = %+v", pruned)
+	}
+	// No policy means no pruning: an operator who set nothing keeps everything.
+	if got, _ := s.PrunePseudoVersions(PruneOptions{Now: now}); len(got) != 0 {
+		t.Errorf("pruned without a policy: %+v", got)
+	}
+}

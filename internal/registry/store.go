@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -32,11 +33,14 @@ var (
 //
 // Published versions are immutable: re-publishing identical content succeeds
 // (CI retries stay safe), different content is refused.
-type Store struct {
-	root string
+// lockStripes is the number of mutexes module locks are hashed onto. Modules
+// are many and concurrent publishes are few, so a fixed set beats a map that
+// only ever grows.
+const lockStripes = 64
 
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+type Store struct {
+	root  string
+	locks [lockStripes]sync.Mutex
 }
 
 // NewStore prepares the directory tree under root and verifies it is writable.
@@ -58,20 +62,16 @@ func NewStore(root string) (*Store, error) {
 	if err := os.Remove(name); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, locks: map[string]*sync.Mutex{}}, nil
+	return &Store{root: root}, nil
 }
 
 // Root reports the directory the store was opened on.
 func (s *Store) Root() string { return s.root }
 
 func (s *Store) lock(m Module) *sync.Mutex {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	key := m.String()
-	if _, ok := s.locks[key]; !ok {
-		s.locks[key] = &sync.Mutex{}
-	}
-	return s.locks[key]
+	h := fnv.New32a()
+	h.Write([]byte(m.String())) //nolint:errcheck // hash writes never fail
+	return &s.locks[h.Sum32()%lockStripes]
 }
 
 func (s *Store) moduleDir(m Module) string {

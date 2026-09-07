@@ -1,0 +1,56 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: buffet
+    main: ./cmd/buffet
+    binary: buffet
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+  - id: buffetd
+    main: ./cmd/buffetd
+    binary: buffetd
+    env: [CGO_ENABLED=0]
+    # The server is only supported on Unix: it relies on directory fsync and
+    # rename-over-existing semantics.
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md, LICENSE, docs/*]
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  use: github
+  groups:
+    - title: Features
+      regexp: '^Add '
+      order: 0
+    - title: Fixes
+      regexp: '^(Fix|Refuse|Reject|Close) '
+      order: 1
+    - title: Other
+      order: 2
+
+release:
+  footer: |
+    Container image: `ghcr.io/smoreg/protobuffet:{{ .Tag }}`

@@ -58,3 +58,21 @@ func TestPythonVersionIsPEP440(t *testing.T) {
 		}
 	}
 }
+
+func TestComposerVersion(t *testing.T) {
+	cases := map[string]string{
+		"v1.2.3":                             "1.2.3",
+		"v2.0.0-rc.1":                        "2.0.0-RC1", // Composer wants RC1, not rc.1
+		"v2.0.0-rc1":                         "2.0.0-RC1",
+		"v1.0.0-beta.2":                      "1.0.0-beta2",
+		"v1.0.0-alpha":                       "1.0.0-alpha1",
+		"v0.0.0-20260907150405-abcdef012345": "0.0.0-dev.20260907150405.abcdef012345",
+		// An unrecognised suffix stays verbatim rather than being guessed at.
+		"v1.0.0-nightly": "1.0.0-nightly",
+	}
+	for in, want := range cases {
+		if got := ComposerVersion(in); got != want {
+			t.Errorf("ComposerVersion(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

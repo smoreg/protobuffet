@@ -225,7 +225,7 @@ func buildComposer(ctx context.Context, buf *buftool.Buf, m *config.Module, t *c
 		return registry.Artifact{}, nil, err
 	}
 	defer cleanup()
-	pkgVersion := registry.EcosystemVersion(version)
+	pkgVersion := registry.ComposerVersion(version)
 
 	composerJSON := map[string]any{
 		"name":        t.Package,
