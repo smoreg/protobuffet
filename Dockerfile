@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
 
-# The registry shells out to buf for compatibility checks, so buf is built
-# from source here rather than pulled from a release tarball: one toolchain,
-# no extra download at runtime, and it stays a static binary.
+# The registry shells out to buf for compatibility checks. The binary comes
+# from the official image rather than being compiled here: building buf from
+# source needs more memory than a small CI runner has, and it is the same
+# static binary either way.
+FROM bufbuild/buf:1.72.0 AS buf
+
 FROM golang:1.26.8-alpine AS build
 ARG VERSION=dev
 WORKDIR /src
-
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go install github.com/bufbuild/buf/cmd/buf@v1.72.0
 
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/buffetd /usr/local/bin/buffetd
 COPY --from=build /out/buffet /usr/local/bin/buffet
-COPY --from=build /go/bin/buf /usr/local/bin/buf
+COPY --from=buf /usr/local/bin/buf /usr/local/bin/buf
 
 USER nonroot:nonroot
 VOLUME /data

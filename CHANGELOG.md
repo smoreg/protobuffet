@@ -31,6 +31,9 @@ until 1.0 the API and the on-disk layout may still change between minors.
 
 ### Fixed
 
+- The container image no longer compiles buf from source: that needed more
+  memory than a small runner has and failed the build.
+
 - Path traversal was possible in principle through the Composer, npm and PyPI
   download handlers; owner, name and version are now validated.
 - Publishing a Go module at v2 or above without the `/vN` path suffix produced
