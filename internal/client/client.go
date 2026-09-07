@@ -156,6 +156,30 @@ func (c *Client) Publish(ctx context.Context, man api.PublishManifest, files map
 	return &out, resp.StatusCode == http.StatusCreated, nil
 }
 
+// SetYanked marks a version as yanked, or clears the mark.
+func (c *Client) SetYanked(ctx context.Context, module, version string, yanked bool, reason string) error {
+	body, err := json.Marshal(map[string]string{"reason": reason})
+	if err != nil {
+		return err
+	}
+	method := http.MethodPut
+	if !yanked {
+		method = http.MethodDelete
+	}
+	req, err := http.NewRequestWithContext(ctx, method,
+		fmt.Sprintf("%s/api/v1/modules/%s/versions/%s/yank", c.BaseURL, module, url.PathEscape(version)),
+		bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
 // SetLabel points a label at a version.
 func (c *Client) SetLabel(ctx context.Context, module, label, version string) error {
 	body, err := json.Marshal(map[string]string{"version": version})

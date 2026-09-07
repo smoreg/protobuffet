@@ -95,8 +95,9 @@ func (h *Handler) serveList(w http.ResponseWriter, modPath string) {
 	for _, v := range versions {
 		// Pseudo-versions are resolvable but must not be listed: the go
 		// command treats listed versions as releases and would pick one over
-		// a tagged release.
-		if registry.IsPseudo(v.Version) {
+		// a tagged release. Yanked versions are hidden for the same reason,
+		// while staying downloadable for anyone who already pinned them.
+		if registry.IsPseudo(v.Version) || v.Yanked {
 			continue
 		}
 		fmt.Fprintln(w, v.Version) //nolint:errcheck // a failed write means the client is gone
@@ -114,7 +115,18 @@ func (h *Handler) serveLatest(w http.ResponseWriter, escaped string) {
 		writeErr(w, err)
 		return
 	}
-	latest := versions[len(versions)-1]
+	var latest registry.Version
+	var found bool
+	for i := len(versions) - 1; i >= 0; i-- {
+		if !versions[i].Yanked {
+			latest, found = versions[i], true
+			break
+		}
+	}
+	if !found {
+		writeErr(w, fmt.Errorf("module %q: every version is yanked: %w", modPath, registry.ErrNotFound))
+		return
+	}
 	writeJSON(w, info{Version: latest.Version, Time: latest.CreatedAt})
 }
 

@@ -69,10 +69,16 @@ func (h *Handler) serveProject(w http.ResponseWriter, name, base string) {
 			return
 		}
 		file := pack.WheelFilename(a.Name, a.Version)
+		// PEP 592: pip skips a yanked file unless the requirement pins that
+		// exact version, which is exactly the behaviour we want.
+		yanked := ""
+		if v.Yanked {
+			yanked = fmt.Sprintf(` data-yanked="%s"`, html.EscapeString(v.YankReason))
+		}
 		links = append(links, fmt.Sprintf(
-			`<a href="%s/pypi/files/%s/%s/%s/%s#sha256=%s" data-requires-python="%s">%s</a><br>`,
+			`<a href="%s/pypi/files/%s/%s/%s/%s#sha256=%s" data-requires-python="%s"%s>%s</a><br>`,
 			base, m.Owner, m.Name, v.Version, file, a.SHA256,
-			html.EscapeString(requiresPython(a)), html.EscapeString(file),
+			html.EscapeString(requiresPython(a)), yanked, html.EscapeString(file),
 		))
 	})
 	if len(links) == 0 {

@@ -31,8 +31,14 @@ type Server struct {
 	// BreakingPolicy decides whether a major version may break compatibility.
 	BreakingPolicy BreakingPolicy `yaml:"breaking_policy"`
 	// BufPath overrides the buf binary location.
-	BufPath string  `yaml:"buf_path"`
-	Tokens  []Token `yaml:"tokens"`
+	BufPath string `yaml:"buf_path"`
+	// MaxUploadBytes caps a whole publish request.
+	MaxUploadBytes int64 `yaml:"max_upload_bytes"`
+	// MaxConcurrentPublishes bounds how many pushes run at once. Each one
+	// unpacks archives and runs buf, so an unbounded number is an easy way to
+	// exhaust memory on a small node.
+	MaxConcurrentPublishes int     `yaml:"max_concurrent_publishes"`
+	Tokens                 []Token `yaml:"tokens"`
 }
 
 // BreakingMode says what happens when a push would break consumers, and what
@@ -117,10 +123,12 @@ func DefaultServer() Server {
 		// An empty base URL means "derive it from the request", which is what
 		// makes the server work behind any hostname without configuration.
 		// Set it explicitly when a proxy rewrites the Host header.
-		BaseURL:        "",
-		PublicRead:     true,
-		BreakingCheck:  BreakingRequired,
-		BreakingPolicy: PolicyStrict,
+		BaseURL:                "",
+		PublicRead:             true,
+		BreakingCheck:          BreakingRequired,
+		BreakingPolicy:         PolicyStrict,
+		MaxUploadBytes:         128 << 20,
+		MaxConcurrentPublishes: 4,
 	}
 }
 
@@ -166,6 +174,12 @@ func LoadServer(path string) (Server, error) {
 	}
 	if cfg.BreakingCheck == "" {
 		cfg.BreakingCheck = BreakingRequired
+	}
+	if cfg.MaxUploadBytes <= 0 {
+		cfg.MaxUploadBytes = 128 << 20
+	}
+	if cfg.MaxConcurrentPublishes <= 0 {
+		cfg.MaxConcurrentPublishes = 4
 	}
 	switch cfg.BreakingPolicy {
 	case "":

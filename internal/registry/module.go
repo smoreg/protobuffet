@@ -80,6 +80,13 @@ type Version struct {
 	Artifacts map[Target]Artifact `json:"artifacts"`
 	// PublishedBy records the token subject that pushed the version.
 	PublishedBy string `json:"published_by,omitempty"`
+
+	// Yanked hides a version from listings while keeping it downloadable.
+	// Deleting it instead would break every lock file that already pins it.
+	Yanked     bool      `json:"yanked,omitempty"`
+	YankReason string    `json:"yank_reason,omitempty"`
+	YankedBy   string    `json:"yanked_by,omitempty"`
+	YankedAt   time.Time `json:"yanked_at,omitempty"`
 }
 
 // Artifact returns the artifact for a target.
@@ -133,11 +140,13 @@ func (i *Index) Predecessor(version string) (Version, bool) {
 	return lowest, haveLowest
 }
 
-// Latest returns the highest semver version, which is the last entry because
-// Versions is kept sorted on write.
+// Latest returns the highest version that is not yanked. A yanked version is
+// never what a consumer asking for "latest" wants.
 func (i *Index) Latest() (Version, bool) {
-	if len(i.Versions) == 0 {
-		return Version{}, false
+	for n := len(i.Versions) - 1; n >= 0; n-- {
+		if !i.Versions[n].Yanked {
+			return i.Versions[n], true
+		}
 	}
-	return i.Versions[len(i.Versions)-1], true
+	return Version{}, false
 }

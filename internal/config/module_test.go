@@ -115,3 +115,48 @@ func TestLoadModuleErrorNamesTheFile(t *testing.T) {
 		t.Errorf("err = %v, want it to name %s", err, ModuleFile)
 	}
 }
+
+func TestValidateRejectsOverlappingOutputs(t *testing.T) {
+	cases := map[string]string{
+		"same directory": `
+version: v1
+module: acme/catalog
+proto: proto
+targets:
+  go: {module: m, template: t, out: gen}
+  python: {package: p, template: t, out: gen}
+`,
+		"nested directory": `
+version: v1
+module: acme/catalog
+proto: proto
+targets:
+  go: {module: m, template: t, out: gen}
+  composer: {package: acme/p, template: t, out: gen/php}
+`,
+		"inside proto": `
+version: v1
+module: acme/catalog
+proto: proto
+targets:
+  go: {module: m, template: t, out: proto/gen}
+`,
+	}
+	for name, body := range cases {
+		if _, err := LoadModule(writeConfig(t, body)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// Distinct directories are fine.
+	ok := `
+version: v1
+module: acme/catalog
+proto: proto
+targets:
+  go: {module: m, template: t, out: gen/go}
+  python: {package: p, template: t, out: gen/python}
+`
+	if _, err := LoadModule(writeConfig(t, ok)); err != nil {
+		t.Errorf("distinct outputs rejected: %v", err)
+	}
+}

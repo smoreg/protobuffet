@@ -4,6 +4,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/smoreg/protobuffet/internal/buftool"
@@ -24,10 +27,6 @@ import (
 	"github.com/smoreg/protobuffet/internal/verify"
 )
 
-// maxUpload caps a publish request. Schema modules and generated SDKs are
-// small; anything larger is a mistake or an attack.
-const maxUpload = 128 << 20
-
 // Server wires the store, the configuration and the HTTP routes together.
 type Server struct {
 	cfg     config.Server
@@ -35,13 +34,21 @@ type Server struct {
 	buf     *buftool.Buf
 	log     *slog.Logger
 	mux     *http.ServeMux
+	metrics *metrics
+	// publishing bounds concurrent publishes: each one holds archives in
+	// memory and runs buf.
+	publishing chan struct{}
 }
 
 // New builds a server. In the default "required" mode a missing buf binary is
 // fatal: a registry that cannot check compatibility silently stops protecting
 // consumers, and that is worse than not starting.
 func New(cfg config.Server, catalog *registry.Catalog, log *slog.Logger) (*Server, error) {
-	s := &Server{cfg: cfg, catalog: catalog, log: log, mux: http.NewServeMux()}
+	s := &Server{
+		cfg: cfg, catalog: catalog, log: log,
+		mux: http.NewServeMux(), metrics: newMetrics(),
+		publishing: make(chan struct{}, cfg.MaxConcurrentPublishes),
+	}
 	if cfg.BreakingCheck.Enabled() {
 		b, err := buftool.Find(cfg.BufPath)
 		switch {
@@ -62,6 +69,7 @@ func New(cfg config.Server, catalog *registry.Catalog, log *slog.Logger) (*Serve
 func (s *Server) routes() {
 	read := func(h http.Handler) http.Handler { return s.requireScope("read", h) }
 	write := func(h http.HandlerFunc) http.Handler { return s.requireScope("write", h) }
+	admin := func(h http.HandlerFunc) http.Handler { return s.requireScope("admin", h) }
 
 	s.mux.Handle("GET /go/", read(http.StripPrefix("/go/", gomodproxy.New(s.catalog))))
 	s.mux.Handle("GET /composer/", read(http.StripPrefix("/composer", composerrepo.New(s.catalog, s.cfg.BaseURL))))
@@ -74,6 +82,10 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /api/v1/modules/{owner}/{name}/versions/{version}/schema.zip", read(http.HandlerFunc(s.getSchema)))
 	s.mux.Handle("POST /api/v1/modules/{owner}/{name}/versions", write(s.publish))
 	s.mux.Handle("PUT /api/v1/modules/{owner}/{name}/labels/{label}", write(s.setLabel))
+	// Yanking hides a bad release without breaking anyone who pinned it, so
+	// it is an admin action rather than a publish-time one.
+	s.mux.Handle("PUT /api/v1/modules/{owner}/{name}/versions/{version}/yank", admin(s.yank))
+	s.mux.Handle("DELETE /api/v1/modules/{owner}/{name}/versions/{version}/yank", admin(s.unyank))
 
 	s.mux.Handle("GET /m/{owner}/{name}", read(http.HandlerFunc(s.uiModule)))
 	// Go module paths live under this prefix by convention; discovery for
@@ -82,6 +94,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok\n")) //nolint:errcheck // a failed write means the client is gone
 	})
+	s.mux.Handle("GET /metrics", read(http.HandlerFunc(s.serveMetrics)))
 	s.mux.Handle("GET /", read(http.HandlerFunc(s.ui)))
 }
 
@@ -96,15 +109,65 @@ func (s *Server) logging(next http.Handler) http.Handler {
 		// Responses carry file contents under a declared content type; tell
 		// browsers not to second-guess it.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		// A request id makes one publish traceable across the client log, the
+		// server log and whatever sits in front.
+		reqID := r.Header.Get("X-Request-Id")
+		if reqID == "" {
+			reqID = newRequestID()
+		}
+		w.Header().Set("X-Request-Id", reqID)
+
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+
+		elapsed := time.Since(start)
+		s.metrics.observe(route(r.URL.Path), rec.status, elapsed)
 		s.log.Info("request",
+			"request_id", reqID,
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
-			"duration", time.Since(start).Round(time.Millisecond),
+			"duration", elapsed.Round(time.Millisecond),
+			"remote", remoteAddr(r),
 		)
 	})
+}
+
+// serveMetrics renders counters plus two gauges taken from the catalog.
+func (s *Server) serveMetrics(w http.ResponseWriter, _ *http.Request) {
+	var modules, versions int64
+	if mods, err := s.catalog.ListModules(); err == nil {
+		modules = int64(len(mods))
+		for _, m := range mods {
+			if idx, err := s.catalog.Index(m); err == nil {
+				versions += int64(len(idx.Versions))
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	s.metrics.writeTo(w, modules, versions)
+}
+
+// newRequestID returns a short random identifier.
+func newRequestID() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(buf[:])
+}
+
+// remoteAddr prefers the forwarded address, since the server normally runs
+// behind a proxy.
+func remoteAddr(r *http.Request) string {
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		if i := strings.IndexByte(v, ','); i > 0 {
+			return v[:i]
+		}
+		return v
+	}
+	return r.RemoteAddr
 }
 
 type statusRecorder struct {
@@ -219,13 +282,66 @@ func (s *Server) setLabel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"label": r.PathValue("label"), "version": body.Version})
 }
 
+func (s *Server) yank(w http.ResponseWriter, r *http.Request) {
+	s.setYanked(w, r, true)
+}
+
+func (s *Server) unyank(w http.ResponseWriter, r *http.Request) {
+	s.setYanked(w, r, false)
+}
+
+func (s *Server) setYanked(w http.ResponseWriter, r *http.Request, yanked bool) {
+	m, err := moduleFrom(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+			http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	subject := ""
+	if tok, ok := tokenFrom(r); ok {
+		subject = tok.Subject
+	}
+	version := r.PathValue("version")
+	if err := s.catalog.SetYanked(m, version, yanked, body.Reason, subject, time.Now()); err != nil {
+		httpError(w, err)
+		return
+	}
+	s.log.Warn("version yank state changed",
+		"module", m.String(), "version", version, "yanked", yanked, "by", subject, "reason", body.Reason)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"module": m.String(), "version": version, "yanked": yanked, "reason": body.Reason,
+	})
+}
+
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	m, err := moduleFrom(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+	select {
+	case s.publishing <- struct{}{}:
+		defer func() { <-s.publishing }()
+	case <-r.Context().Done():
+		http.Error(w, "client went away", http.StatusRequestTimeout)
+		return
+	case <-time.After(30 * time.Second):
+		// Shedding load beats queueing until the node runs out of memory.
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "too many concurrent publishes", http.StatusServiceUnavailable)
+		s.metrics.publish("throttled")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUploadBytes)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(w, "invalid multipart body: "+err.Error(), http.StatusBadRequest)
 		return
@@ -293,6 +409,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if report != nil && report.Findings != "" && report.Overridden == "" {
+		s.metrics.publish("breaking")
 		writeJSON(w, http.StatusConflict, PublishResponse{Module: m.String(), Breaking: report})
 		return
 	}
@@ -311,9 +428,11 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		PublishedBy: subject,
 	})
 	if err != nil {
+		s.metrics.publish("error")
 		httpError(w, err)
 		return
 	}
+	s.metrics.publish("ok")
 	s.log.Info("published", "module", m.String(), "version", version.Version, "by", subject)
 	writeJSON(w, http.StatusCreated, PublishResponse{Module: m.String(), Version: version, Breaking: report})
 }

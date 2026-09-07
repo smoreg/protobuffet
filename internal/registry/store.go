@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -273,9 +274,13 @@ func (s *Store) Publish(req PublishRequest) (Version, error) {
 		idx.Labels = map[string]string{}
 	}
 	for _, l := range req.Labels {
-		if l != "" {
-			idx.Labels[l] = version
+		if l == "" {
+			continue
 		}
+		if err := ValidateLabel(l); err != nil {
+			return Version{}, err
+		}
+		idx.Labels[l] = version
 	}
 	idx.Updated = now.UTC()
 	if err := s.writeIndex(req.Module, idx); err != nil {
@@ -322,8 +327,29 @@ func (s *Store) writeIndex(m Module, idx *Index) error {
 	return writeFileAtomic(filepath.Join(s.moduleDir(m), "index.json"), append(b, '\n'))
 }
 
+var labelRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// ValidateLabel rejects names that would make resolution ambiguous. A label
+// that parses as a version, or the word "latest", would shadow the thing it
+// is supposed to point at.
+func ValidateLabel(label string) error {
+	if !labelRe.MatchString(label) {
+		return fmt.Errorf("label %q: must match %s", label, labelRe)
+	}
+	if label == "latest" {
+		return fmt.Errorf("label %q is reserved", label)
+	}
+	if _, err := NormalizeVersion(label); err == nil {
+		return fmt.Errorf("label %q looks like a version, which would shadow it", label)
+	}
+	return nil
+}
+
 // SetLabel points a mutable label (for example "main") at a version.
 func (s *Store) SetLabel(m Module, label, version string) error {
+	if err := ValidateLabel(label); err != nil {
+		return err
+	}
 	mu := s.lock(m)
 	mu.Lock()
 	defer mu.Unlock()
@@ -339,6 +365,55 @@ func (s *Store) SetLabel(m Module, label, version string) error {
 		idx.Labels = map[string]string{}
 	}
 	idx.Labels[label] = version
+	return s.writeIndex(m, idx)
+}
+
+// SetYanked marks a version as yanked, or clears the mark. The version stays
+// downloadable either way: a consumer whose lock file pins it must keep
+// building.
+func (s *Store) SetYanked(m Module, version string, yanked bool, reason, by string, now time.Time) error {
+	mu := s.lock(m)
+	mu.Lock()
+	defer mu.Unlock()
+
+	idx, err := s.Index(m)
+	if err != nil {
+		return err
+	}
+	normalized, err := NormalizeVersion(version)
+	if err != nil {
+		return err
+	}
+	found := false
+	for i := range idx.Versions {
+		if idx.Versions[i].Version != normalized {
+			continue
+		}
+		found = true
+		idx.Versions[i].Yanked = yanked
+		if yanked {
+			idx.Versions[i].YankReason = reason
+			idx.Versions[i].YankedBy = by
+			idx.Versions[i].YankedAt = now.UTC()
+		} else {
+			idx.Versions[i].YankReason = ""
+			idx.Versions[i].YankedBy = ""
+			idx.Versions[i].YankedAt = time.Time{}
+		}
+	}
+	if !found {
+		return fmt.Errorf("%s@%s: %w", m, normalized, ErrNotFound)
+	}
+	// A label pointing at a yanked version would hand it to everyone
+	// following that label, which is the opposite of yanking.
+	if yanked {
+		for label, target := range idx.Labels {
+			if target == normalized {
+				delete(idx.Labels, label)
+			}
+		}
+	}
+	idx.Updated = now.UTC()
 	return s.writeIndex(m, idx)
 }
 

@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 // ErrNameTaken means another module already publishes a package under this
@@ -146,6 +147,14 @@ func (c *Catalog) Publish(req PublishRequest) (Version, error) {
 		return Version{}, err
 	}
 	return version, c.reload(req.Module)
+}
+
+// SetYanked marks or unmarks a version as yanked.
+func (c *Catalog) SetYanked(m Module, version string, yanked bool, reason, by string, now time.Time) error {
+	if err := c.store.SetYanked(m, version, yanked, reason, by, now); err != nil {
+		return err
+	}
+	return c.reload(m)
 }
 
 // SetLabel points a label at a version.

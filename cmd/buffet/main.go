@@ -34,6 +34,9 @@ usage:
   buffet check [flags]            check compatibility against the registry
   buffet list [flags]             list modules in the registry
   buffet info <owner/name> [flags]  show versions of one module
+  buffet label <module> <label> <version>  move a label
+  buffet yank <module>@<version>  hide a bad release (admin, keeps it downloadable)
+  buffet unyank <module>@<version>  undo a yank
   buffet login [flags]            store a token for a registry
   buffet token                    generate a token and its config digest
   buffet version                  print the version
@@ -69,6 +72,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdList(args[1:], stdout)
 	case "info":
 		err = cmdInfo(args[1:], stdout)
+	case "label":
+		err = cmdLabel(args[1:], stdout)
+	case "yank":
+		err = cmdYank(args[1:], stdout, true)
+	case "unyank":
+		err = cmdYank(args[1:], stdout, false)
 	case "login":
 		err = cmdLogin(args[1:], stdout)
 	case "token":
@@ -317,6 +326,57 @@ func cmdInfo(args []string, stdout io.Writer) error {
 			v.Version, v.CreatedAt.Format(time.RFC3339), strings.Join(targets, " "), strings.Join(labels[v.Version], ","))
 	}
 	return w.Flush()
+}
+
+func cmdLabel(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("label", flag.ExitOnError)
+	var rf registryFlags
+	addRegistryFlags(fs, &rf)
+	_ = fs.Parse(args)
+	if fs.NArg() != 3 {
+		return fmt.Errorf("label takes <module> <label> <version>: %w", errUsage)
+	}
+	c, err := rf.client()
+	if err != nil {
+		return err
+	}
+	if err := c.SetLabel(context.Background(), fs.Arg(0), fs.Arg(1), fs.Arg(2)); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "%s: label %s now points at %s\n", fs.Arg(0), fs.Arg(1), fs.Arg(2)) //nolint:errcheck
+	return nil
+}
+
+func cmdYank(args []string, stdout io.Writer, yanked bool) error {
+	name := "yank"
+	if !yanked {
+		name = "unyank"
+	}
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
+	var rf registryFlags
+	addRegistryFlags(fs, &rf)
+	reason := fs.String("reason", "", "why the version is being yanked")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		return fmt.Errorf("%s takes <module>@<version>: %w", name, errUsage)
+	}
+	module, version, ok := strings.Cut(fs.Arg(0), "@")
+	if !ok {
+		return fmt.Errorf("%s takes <module>@<version>: %w", name, errUsage)
+	}
+	c, err := rf.client()
+	if err != nil {
+		return err
+	}
+	if err := c.SetYanked(context.Background(), module, version, yanked, *reason); err != nil {
+		return err
+	}
+	if yanked {
+		fmt.Fprintf(stdout, "%s@%s yanked; it stays downloadable for lock files that pin it\n", module, version) //nolint:errcheck
+	} else {
+		fmt.Fprintf(stdout, "%s@%s is listed again\n", module, version) //nolint:errcheck
+	}
+	return nil
 }
 
 func cmdLogin(args []string, stdout io.Writer) error {

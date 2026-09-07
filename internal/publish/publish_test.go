@@ -298,3 +298,54 @@ func TestCheckMajorSuffix(t *testing.T) {
 		t.Errorf("v3 rejected: %v", err)
 	}
 }
+
+func TestPrepareDoesNotMutateTheWorkingTree(t *testing.T) {
+	dir := moduleDir(t)
+	m, err := config.LoadModule(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshot(t, dir)
+	if _, err := Prepare(context.Background(), noopBuf(t), m, Options{Version: "v1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	after := snapshot(t, dir)
+
+	// A publish that writes go.mod, composer.json or package.json into the
+	// user's tree either pollutes the repository or overwrites a file they
+	// maintain by hand.
+	for name := range after {
+		if _, existed := before[name]; !existed {
+			t.Errorf("publish created %s in the working tree", name)
+		}
+	}
+	for name, sum := range before {
+		if after[name] != sum {
+			t.Errorf("publish modified %s", name)
+		}
+	}
+}
+
+func snapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		out[rel] = string(body)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}

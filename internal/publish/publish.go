@@ -153,7 +153,15 @@ func buildGo(ctx context.Context, buf *buftool.Buf, m *config.Module, t *config.
 	if err := checkMajorSuffix(t.Module, version); err != nil {
 		return registry.Artifact{}, nil, err
 	}
-	out := m.Path(t.Out)
+	// Metadata files are written into a copy: publishing must not leave a
+	// generated go.mod in the user's tree, and -skip-generate must not
+	// overwrite one they wrote themselves.
+	out, cleanup, err := stagedCopy(m.Path(t.Out))
+	if err != nil {
+		return registry.Artifact{}, nil, err
+	}
+	defer cleanup()
+
 	if err := writeGoMod(out, t); err != nil {
 		return registry.Artifact{}, nil, err
 	}
@@ -212,7 +220,11 @@ func buildComposer(ctx context.Context, buf *buftool.Buf, m *config.Module, t *c
 	if err := generate(ctx, buf, m, t.Template, skip); err != nil {
 		return registry.Artifact{}, nil, err
 	}
-	out := m.Path(t.Out)
+	out, cleanup, err := stagedCopy(m.Path(t.Out))
+	if err != nil {
+		return registry.Artifact{}, nil, err
+	}
+	defer cleanup()
 	pkgVersion := registry.EcosystemVersion(version)
 
 	composerJSON := map[string]any{
@@ -261,7 +273,11 @@ func buildNPM(ctx context.Context, buf *buftool.Buf, m *config.Module, t *config
 	if err := generate(ctx, buf, m, t.Template, skip); err != nil {
 		return registry.Artifact{}, nil, err
 	}
-	out := m.Path(t.Out)
+	out, cleanup, err := stagedCopy(m.Path(t.Out))
+	if err != nil {
+		return registry.Artifact{}, nil, err
+	}
+	defer cleanup()
 	pkgVersion := registry.EcosystemVersion(version)
 
 	packageJSON := map[string]any{
@@ -341,6 +357,40 @@ func buildPython(ctx context.Context, buf *buftool.Buf, m *config.Module, t *con
 		SHA256:  registry.SHA256Hex(wheel),
 		Meta:    meta,
 	}, wheel, nil
+}
+
+// stagedCopy mirrors dir into a temporary directory. Artifacts are packed
+// from the copy, so metadata files the packer adds never land in the
+// repository being published.
+func stagedCopy(dir string) (string, func(), error) {
+	staging, err := os.MkdirTemp("", "buffet-stage-")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup := func() { os.RemoveAll(staging) } //nolint:errcheck // temp dir
+	files, err := pack.Files(dir, pack.SkipHidden)
+	if err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	for _, rel := range files {
+		src := filepath.Join(dir, filepath.FromSlash(rel))
+		dst := filepath.Join(staging, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+		body, err := os.ReadFile(src)
+		if err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+		if err := os.WriteFile(dst, body, 0o644); err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+	}
+	return staging, cleanup, nil
 }
 
 func toAnySlice(in []string) []any {

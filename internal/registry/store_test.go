@@ -284,3 +284,74 @@ func TestCleanOrphans(t *testing.T) {
 		t.Errorf("published version removed: %v", err)
 	}
 }
+
+func TestValidateLabel(t *testing.T) {
+	for _, ok := range []string{"main", "stable", "v2-line", "release.candidate", "prod_eu"} {
+		if err := ValidateLabel(ok); err != nil {
+			t.Errorf("ValidateLabel(%q) = %v", ok, err)
+		}
+	}
+	// A label that parses as a version, or "latest", would shadow the thing
+	// it points at inside Resolve.
+	for _, bad := range []string{"", "latest", "v1.0.0", "1.0.0", "Main", "with space", "-leading", strings.Repeat("x", 65)} {
+		if err := ValidateLabel(bad); err == nil {
+			t.Errorf("ValidateLabel(%q) accepted", bad)
+		}
+	}
+
+	s, _ := NewStore(t.TempDir())
+	publish(t, s, "v1.0.0", []byte("a"))
+	if err := s.SetLabel(Module{Owner: "acme", Name: "catalog"}, "latest", "v1.0.0"); err == nil {
+		t.Error("SetLabel accepted a reserved label")
+	}
+	_, err := s.Publish(PublishRequest{
+		Module: Module{Owner: "acme", Name: "catalog"}, Version: "v1.1.0",
+		SchemaZip: []byte("b"), Labels: []string{"v2.0.0"},
+	})
+	if err == nil {
+		t.Error("publish accepted a version-shaped label")
+	}
+}
+
+func TestYankKeepsDownloadsAndClearsLabels(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	mod := Module{Owner: "acme", Name: "catalog"}
+	publish(t, s, "v1.0.0", []byte("a"))
+	publish(t, s, "v1.1.0", []byte("b"), "main")
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+
+	if err := s.SetYanked(mod, "v1.1.0", true, "leaked", "boss", now); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := s.Index(mod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Latest skips the yanked version, and the label that pointed at it is
+	// gone: following "main" must not hand out a yanked release.
+	if v, ok := idx.Latest(); !ok || v.Version != "v1.0.0" {
+		t.Errorf("Latest = %v", v.Version)
+	}
+	if _, ok := idx.Labels["main"]; ok {
+		t.Error("label survived the yank")
+	}
+	// The version itself is still resolvable and its files still readable.
+	v, err := s.Resolve(mod, "v1.1.0")
+	if err != nil || !v.Yanked || v.YankReason != "leaked" || v.YankedBy != "boss" {
+		t.Fatalf("resolved = %+v, err = %v", v, err)
+	}
+	if _, err := s.ReadAll(mod, "v1.1.0", "schema.zip"); err != nil {
+		t.Errorf("yanked schema unreadable: %v", err)
+	}
+
+	if err := s.SetYanked(mod, "v1.1.0", false, "", "boss", now); err != nil {
+		t.Fatal(err)
+	}
+	idx, _ = s.Index(mod)
+	if v, _ := idx.Latest(); v.Version != "v1.1.0" {
+		t.Errorf("after unyank Latest = %v", v.Version)
+	}
+	if err := s.SetYanked(mod, "v9.9.9", true, "", "boss", now); !errors.Is(err, ErrNotFound) {
+		t.Errorf("yank of a missing version: %v", err)
+	}
+}

@@ -5,7 +5,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -153,7 +155,66 @@ func (m *Module) validate() error {
 			t.RequiresPython = ">=3.8"
 		}
 	}
+	return m.validateOutputs()
+}
+
+// validateOutputs rejects overlapping target directories. Two targets sharing
+// an output silently pack each other's files: a wheel containing go.mod, a Go
+// module zip containing PHP classes.
+func (m *Module) validateOutputs() error {
+	outs := map[string]string{}
+	for name, out := range map[string]string{
+		"go":       outOf(m.Targets.Go),
+		"composer": outOfComposer(m.Targets.Composer),
+		"npm":      outOfNPM(m.Targets.NPM),
+		"python":   outOfPython(m.Targets.Python),
+	} {
+		if out == "" {
+			continue
+		}
+		clean := path.Clean(filepath.ToSlash(out))
+		for otherName, otherOut := range outs {
+			if clean == otherOut {
+				return fmt.Errorf("targets.%s and targets.%s share out %q", name, otherName, out)
+			}
+			if strings.HasPrefix(clean, otherOut+"/") || strings.HasPrefix(otherOut, clean+"/") {
+				return fmt.Errorf("targets.%s out %q is nested inside targets.%s out %q", name, out, otherName, otherOut)
+			}
+		}
+		if proto := path.Clean(filepath.ToSlash(m.Proto)); clean == proto || strings.HasPrefix(clean, proto+"/") {
+			return fmt.Errorf("targets.%s out %q is inside the proto directory", name, out)
+		}
+		outs[name] = clean
+	}
 	return nil
+}
+
+func outOf(t *GoTarget) string {
+	if t == nil {
+		return ""
+	}
+	return t.Out
+}
+
+func outOfComposer(t *ComposerTarget) string {
+	if t == nil {
+		return ""
+	}
+	return t.Out
+}
+
+func outOfNPM(t *NPMTarget) string {
+	if t == nil {
+		return ""
+	}
+	return t.Out
+}
+
+func outOfPython(t *PythonTarget) string {
+	if t == nil {
+		return ""
+	}
+	return t.Out
 }
 
 // Path resolves a config-relative path against the config directory.

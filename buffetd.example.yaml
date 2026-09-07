@@ -19,6 +19,11 @@ public_read: true
 #   off          no checking
 breaking_check: required
 
+# Limits. A publish holds its artifacts in memory and runs buf, so both of
+# these bound peak memory on the node.
+max_upload_bytes: 134217728       # 128 MiB per request
+max_concurrent_publishes: 4
+
 # Mint credentials with: buffet token
 tokens:
   - subject: ci

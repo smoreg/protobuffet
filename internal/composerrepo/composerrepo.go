@@ -97,7 +97,10 @@ func (h *Handler) servePackages(w http.ResponseWriter, base string) {
 		}
 		for _, v := range idx.Versions {
 			a, ok := v.Artifact(registry.TargetComposer)
-			if !ok {
+			// Composer has no yank concept, so a yanked version simply
+			// disappears from the metadata; the dist stays downloadable for
+			// lock files that already reference it.
+			if !ok || v.Yanked {
 				continue
 			}
 			pv := packageVersion{

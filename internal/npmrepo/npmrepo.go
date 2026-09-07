@@ -104,7 +104,7 @@ func (h *Handler) servePackument(w http.ResponseWriter, name, base string) {
 		}
 		for _, v := range idx.Versions {
 			a, ok := v.Artifact(registry.TargetNPM)
-			if !ok || a.Name != name {
+			if !ok || a.Name != name || v.Yanked {
 				continue
 			}
 			nv := npmVersion{
