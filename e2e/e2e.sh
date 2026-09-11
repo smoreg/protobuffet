@@ -28,6 +28,7 @@ command -v protoc-gen-go >/dev/null || go install google.golang.org/protobuf/cmd
 command -v buf >/dev/null || { echo "buf is required: go install github.com/bufbuild/buf/cmd/buf@latest"; exit 1; }
 # The example generates PHP through protoc_builtin, which drives protoc.
 command -v protoc >/dev/null || { echo "protoc is required for the PHP target: install protobuf-compiler"; exit 1; }
+command -v protoc-gen-es >/dev/null || { echo "protoc-gen-es is required for the npm target: npm install -g @bufbuild/protoc-gen-es"; exit 1; }
 
 step "start registry"
 BUFFET_ADMIN_TOKEN="$TOKEN" "$TMP/buffetd" -listen "127.0.0.1:${PORT}" -data "$TMP/data" &
@@ -129,6 +130,62 @@ PYEOF
 else
   echo "skipped: python3 not installed"
 fi
+
+step "consume the npm package with the real npm client"
+if command -v npm >/dev/null; then
+  mkdir -p "$TMP/nodeapp"
+  cd "$TMP/nodeapp"
+  cat > package.json <<'JSON'
+{"name": "e2e-consumer", "version": "1.0.0", "type": "module", "private": true}
+JSON
+  # Scope the registry so only our packages come from it; @bufbuild/protobuf
+  # still comes from the public registry, which is how a private scope works.
+  cat > .npmrc <<NPMRC
+@acme:registry=${REGISTRY}/npm
+NPMRC
+  npm install --silent --no-audit --no-fund "@acme/catalog@1.0.0" >/dev/null
+  node --input-type=module -e "
+import { ProductSchema, ProductStatus } from '@acme/catalog/catalog/v1/catalog_pb.js';
+import { create, toBinary, fromBinary } from '@bufbuild/protobuf';
+const p = create(ProductSchema, { sku: 'TEA-001', priceMinor: 4500n, status: ProductStatus.ACTIVE });
+const back = fromBinary(ProductSchema, toBinary(ProductSchema, p));
+if (back.sku !== 'TEA-001') { throw new Error('round trip failed'); }
+console.log('node consumer ran against the registry package:', back.sku, back.priceMinor);
+"
+  cd "$ROOT"
+else
+  echo "skipped: npm not installed"
+fi
+
+step "labels and pseudo-versions"
+# No -version: the registry derives a pseudo-version from the schema digest.
+"$TMP/buffet" publish -config examples/catalog -label dev >"$TMP/pseudo.log"
+PSEUDO=$(grep -E "^version" "$TMP/pseudo.log" | awk '{print $2}')
+echo "pseudo-version: $PSEUDO"
+case "$PSEUDO" in
+  v0.0.0-*) ;;
+  *) echo "FAIL: expected a pseudo-version, got $PSEUDO"; exit 1 ;;
+esac
+# A pseudo-version resolves by name but must not be listed as a release.
+curl -sf "${REGISTRY}/go/registry.example.com/gen/go/acme/catalog/@v/${PSEUDO}.info" >/dev/null
+if curl -sf "${REGISTRY}/go/registry.example.com/gen/go/acme/catalog/@v/list" | grep -q "v0.0.0-"; then
+  echo "FAIL: pseudo-version appears in @v/list"; exit 1
+fi
+# Labels resolve wherever a version does.
+"$TMP/buffet" info acme/catalog | grep -q "dev" || { echo "FAIL: label missing"; exit 1; }
+curl -sf "${REGISTRY}/api/v1/modules/acme/catalog/versions/dev" | grep -q "$PSEUDO" \
+  || { echo "FAIL: label does not resolve to the pseudo-version"; exit 1; }
+echo "pseudo-version resolvable, hidden from the release list, label resolves"
+
+step "yank hides a release but keeps it downloadable"
+"$TMP/buffet" yank -reason "e2e check" "acme/catalog@v1.0.0"
+if curl -sf "${REGISTRY}/go/registry.example.com/gen/go/acme/catalog/@v/list" | grep -q "v1.0.0"; then
+  echo "FAIL: yanked version still listed"; exit 1
+fi
+curl -sf "${REGISTRY}/go/registry.example.com/gen/go/acme/catalog/@v/v1.0.0.zip" -o /dev/null \
+  || { echo "FAIL: yanked version is not downloadable"; exit 1; }
+"$TMP/buffet" unyank "acme/catalog@v1.0.0"
+echo "yank hides from listings, direct download still works"
 
 step "the registry refuses a breaking change"
 cp -R examples/catalog "$TMP/breaking"

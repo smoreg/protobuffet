@@ -32,6 +32,7 @@ make e2e    # the real go/pip/composer round trip
 ```sh
 go install github.com/bufbuild/buf/cmd/buf@latest
 go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+npm install -g @bufbuild/protoc-gen-es
 brew install protobuf          # or: apt install protobuf-compiler
 ```
 

@@ -21,6 +21,15 @@ targets:
     requires_python: ">=3.8"
     license: Apache-2.0
 
+  npm:
+    package: "@acme/catalog"
+    template: buf.gen.ts.yaml
+    out: gen/ts
+    type: module
+    license: Apache-2.0
+    dependencies:
+      "@bufbuild/protobuf": "^2.2.0"
+
   composer:
     package: acme/catalog-proto
     template: buf.gen.php.yaml

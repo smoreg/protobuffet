@@ -1,0 +1,11 @@
+# TypeScript generation with protoc-gen-es, installed from npm:
+#   npm install -g @bufbuild/protoc-gen-es
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  - local: protoc-gen-es
+    out: gen/ts
+    opt:
+      - target=js+dts
+      - import_extension=none

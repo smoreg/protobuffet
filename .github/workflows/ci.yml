@@ -57,6 +57,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install "protobuf>=5.27"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @bufbuild/protoc-gen-es
       - name: install toolchain
         run: |
           go install github.com/bufbuild/buf/cmd/buf@v1.72.0
@@ -75,4 +79,14 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: protobuffet:ci
+      - name: the image actually runs
+        run: |
+          docker run -d --name pb -p 8080:8080 -e BUFFET_ADMIN_TOKEN=ci-token protobuffet:ci
+          for _ in $(seq 1 30); do curl -sf localhost:8080/healthz && break; sleep 1; done
+          curl -sf localhost:8080/healthz
+          # buf ships in the image; without it the compatibility gate cannot start
+          docker exec pb /usr/local/bin/buf --version
+          docker logs pb | grep -q "compatibility checks enabled"
+          docker rm -f pb
