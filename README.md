@@ -183,11 +183,16 @@ surface narrow.
 | Breaking-change gate on push | yes | yes |
 | Versions, labels, immutability | yes | yes |
 | Hosted code generation (remote plugins) | yes | no, generation is local |
+| Package-name ownership across modules | yes | yes |
+| Per-module write scopes | per-repository roles | yes, token module patterns |
+| Yanking a release | yes | yes |
+| Retention for CI pushes | — | yes (`buffetd -gc`) |
+| Audit log | yes | yes |
+| Prometheus metrics | — | yes |
 | Schema dependencies between your own modules | yes | yes, `buffet vendor` |
 | Public schema dependencies (googleapis etc.) | yes | vendor once, then publish or commit |
 | Generated documentation, search | yes | no |
 | Organizations, RBAC, SSO, SCIM | yes | no, tokens with read/write scopes |
-| Package-name ownership across modules | yes | yes |
 | Refuse to start when the gate cannot run | — | yes (`breaking_check: required`) |
 | Reflection API, webhooks, Studio | yes | no |
 

@@ -3,7 +3,9 @@
 Notable changes, newest first. Versions follow [semver](https://semver.org);
 until 1.0 the API and the on-disk layout may still change between minors.
 
-## Unreleased
+## 0.1.0 — 2026-09-11
+
+First release. Everything below is new.
 
 ### Added
 
