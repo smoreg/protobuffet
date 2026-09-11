@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
@@ -154,17 +155,56 @@ func (s *Store) Index(m Module) (*Index, error) {
 	return &idx, nil
 }
 
-// PublishRequest carries one version and its files. Files are keyed by the
-// artifact file name; schema is the .proto module archive.
+// PublishRequest carries one version and its files.
+//
+// Files may be supplied either in memory (Files) or as paths to files already
+// on disk (FilePaths), which is how an upload arrives: multipart parts land in
+// temporary files, and copying them through a []byte would put every artifact
+// of every concurrent publish in RAM at once.
 type PublishRequest struct {
-	Module      Module
-	Version     string
-	SchemaZip   []byte
+	Module    Module
+	Version   string
+	SchemaZip []byte
+	// SchemaPath is used when the schema archive is already on disk.
+	SchemaPath  string
 	Artifacts   []Artifact
 	Files       map[string][]byte
+	FilePaths   map[string]string
 	Labels      []string
 	PublishedBy string
 	Now         time.Time
+}
+
+// openFile returns the content of one request file as a reader, whichever way
+// the caller supplied it.
+func (r PublishRequest) openFile(name string) (io.ReadCloser, error) {
+	if body, ok := r.Files[name]; ok {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	if path, ok := r.FilePaths[name]; ok {
+		return os.Open(path)
+	}
+	return nil, fmt.Errorf("file %q missing from request", name)
+}
+
+// hasFile reports whether the request carries a file under this name.
+func (r PublishRequest) hasFile(name string) bool {
+	if _, ok := r.Files[name]; ok {
+		return true
+	}
+	_, ok := r.FilePaths[name]
+	return ok
+}
+
+// schemaReader opens the schema archive.
+func (r PublishRequest) schemaReader() (io.ReadCloser, error) {
+	if r.SchemaZip != nil {
+		return io.NopCloser(bytes.NewReader(r.SchemaZip)), nil
+	}
+	if r.SchemaPath != "" {
+		return os.Open(r.SchemaPath)
+	}
+	return nil, fmt.Errorf("schema archive missing from request")
 }
 
 // Publish writes a version and updates the module index.
@@ -177,18 +217,24 @@ func (s *Store) Publish(req PublishRequest) (Version, error) {
 	if err != nil {
 		return Version{}, err
 	}
-	schemaSHA := sha256hex(req.SchemaZip)
+	schemaSHA, _, err := digestFile(req.schemaReader)
+	if err != nil {
+		return Version{}, fmt.Errorf("read schema archive: %w", err)
+	}
 
 	// Digests are computed here, from the bytes that will actually be stored.
 	// A digest supplied by the client is treated as a claim to verify, never
 	// as the value to publish: a wrong shasum in Composer or npm metadata
 	// makes the package uninstallable, and versions are immutable.
 	for i, a := range req.Artifacts {
-		body, ok := req.Files[a.File]
-		if !ok {
+		if !req.hasFile(a.File) {
 			return Version{}, fmt.Errorf("artifact %s: file %q missing from request", a.Target, a.File)
 		}
-		sha256sum, sha1sum := sha256hex(body), sha1hex(body)
+		sha256sum, sha1sum, size, err := digestArtifact(req, a.File)
+		if err != nil {
+			return Version{}, fmt.Errorf("artifact %s: %w", a.Target, err)
+		}
+		req.Artifacts[i].Size = size
 		if a.SHA256 != "" && a.SHA256 != sha256sum {
 			return Version{}, fmt.Errorf("artifact %s: sha256 claimed %s, got %s: %w",
 				a.Target, short(a.SHA256), short(sha256sum), ErrDigestMismatch)
@@ -254,15 +300,14 @@ func (s *Store) Publish(req PublishRequest) (Version, error) {
 	// Removing a directory that was already renamed into place is expected.
 	defer os.RemoveAll(staging) //nolint:errcheck // best-effort cleanup of a staging dir
 
-	if err := writeFileAtomic(filepath.Join(staging, "schema.zip"), req.SchemaZip); err != nil {
+	if err := copyInto(filepath.Join(staging, "schema.zip"), req.schemaReader); err != nil {
 		return Version{}, err
 	}
 	for _, a := range req.Artifacts {
-		body := req.Files[a.File]
-		if err := writeFileAtomic(filepath.Join(staging, a.File), body); err != nil {
+		open := func() (io.ReadCloser, error) { return req.openFile(a.File) }
+		if err := copyInto(filepath.Join(staging, a.File), open); err != nil {
 			return Version{}, err
 		}
-		a.Size = int64(len(body))
 		v.Artifacts[a.Target] = a
 	}
 	if err := os.Rename(staging, final); err != nil {
@@ -536,6 +581,73 @@ func (s *Store) CleanOrphans() ([]string, error) {
 		mu.Unlock()
 	}
 	return removed, nil
+}
+
+// digestFile hashes a stream without holding it in memory.
+func digestFile(open func() (io.ReadCloser, error)) (sha256sum string, size int64, err error) {
+	rc, err := open()
+	if err != nil {
+		return "", 0, err
+	}
+	defer rc.Close() //nolint:errcheck // read side
+
+	h := sha256.New()
+	size, err = io.Copy(h, rc)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), size, nil
+}
+
+// digestArtifact hashes one artifact with both digests in a single pass.
+func digestArtifact(req PublishRequest, name string) (sha256sum, sha1sum string, size int64, err error) {
+	rc, err := req.openFile(name)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer rc.Close() //nolint:errcheck // read side
+
+	h256, h1 := sha256.New(), sha1.New()
+	size, err = io.Copy(io.MultiWriter(h256, h1), rc)
+	if err != nil {
+		return "", "", 0, err
+	}
+	return hex.EncodeToString(h256.Sum(nil)), hex.EncodeToString(h1.Sum(nil)), size, nil
+}
+
+// copyInto streams a file into place, then fsyncs it and its directory.
+func copyInto(path string, open func() (io.ReadCloser, error)) error {
+	rc, err := open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close() //nolint:errcheck // read side
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name()) //nolint:errcheck // best-effort cleanup
+
+	if _, err := io.Copy(tmp, rc); err != nil {
+		tmp.Close() //nolint:errcheck // already failing
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close() //nolint:errcheck // already failing
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	return fsyncDir(dir)
 }
 
 func writeFileAtomic(path string, body []byte) error {

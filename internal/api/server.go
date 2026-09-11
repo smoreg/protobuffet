@@ -553,12 +553,16 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files, err := readUploads(r)
+	// Uploads stay on disk. Reading them into memory put every artifact of
+	// every concurrent publish in RAM at once: four publishes of four 128 MB
+	// artifacts is more than the pod is allowed.
+	uploads, cleanup, err := spillUploads(r)
+	defer cleanup()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	schema, ok := files["schema.zip"]
+	schemaPath, ok := uploads["schema.zip"]
 	if !ok {
 		http.Error(w, "schema.zip is required", http.StatusBadRequest)
 		return
@@ -569,17 +573,28 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "at least one artifact is required", http.StatusBadRequest)
 		return
 	}
+	schema, err := os.ReadFile(schemaPath)
+	if err != nil {
+		httpError(w, err)
+		return
+	}
 	if man.SchemaSHA256 != "" && man.SchemaSHA256 != registry.SHA256Hex(schema) {
 		http.Error(w, "schema.zip digest mismatch", http.StatusBadRequest)
 		return
 	}
 
 	// Reject a malformed artifact before it becomes an immutable version.
+	// Verification reads one artifact at a time rather than all of them.
 	for _, a := range man.Artifacts {
-		body, ok := files[a.File]
+		path, ok := uploads[a.File]
 		if !ok {
 			http.Error(w, fmt.Sprintf("artifact %s: file %q missing from the request", a.Target, a.File),
 				http.StatusBadRequest)
+			return
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			httpError(w, err)
 			return
 		}
 		if err := verify.Artifact(a, body); err != nil {
@@ -626,9 +641,9 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	version, err := s.catalog.Publish(registry.PublishRequest{
 		Module:      m,
 		Version:     man.Version,
-		SchemaZip:   schema,
+		SchemaPath:  schemaPath,
 		Artifacts:   man.Artifacts,
-		Files:       files,
+		FilePaths:   uploads,
 		Labels:      man.Labels,
 		PublishedBy: subject,
 	})
@@ -727,24 +742,45 @@ func (s *Server) checkBreaking(ctx context.Context, m registry.Module, version s
 	return report, nil
 }
 
-func readUploads(r *http.Request) (map[string][]byte, error) {
-	out := map[string][]byte{}
+// spillUploads writes every multipart part to a temporary file and returns
+// their paths. The cleanup function is safe to call even when the parse
+// failed, and must always be deferred.
+func spillUploads(r *http.Request) (map[string]string, func(), error) {
+	dir, err := os.MkdirTemp("", "buffet-upload-")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup := func() { os.RemoveAll(dir) } //nolint:errcheck // temp dir
+
+	out := map[string]string{}
 	for field, headers := range r.MultipartForm.File {
 		for _, fh := range headers {
-			f, err := fh.Open()
+			src, err := fh.Open()
 			if err != nil {
-				return nil, err
+				return nil, cleanup, err
 			}
-			buf := make([]byte, fh.Size)
-			if _, err := io.ReadFull(f, buf); err != nil {
-				f.Close()
-				return nil, fmt.Errorf("read %s: %w", field, err)
+			// The field name is attacker controlled and becomes a file name.
+			if strings.ContainsAny(field, `/\`) || strings.HasPrefix(field, ".") {
+				src.Close() //nolint:errcheck // already failing
+				return nil, cleanup, fmt.Errorf("invalid upload field %q", field)
 			}
-			f.Close()
-			out[field] = buf
+			dst, err := os.Create(filepath.Join(dir, field))
+			if err != nil {
+				src.Close() //nolint:errcheck // already failing
+				return nil, cleanup, err
+			}
+			_, err = io.Copy(dst, src)
+			src.Close() //nolint:errcheck // read side
+			if closeErr := dst.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return nil, cleanup, fmt.Errorf("store upload %s: %w", field, err)
+			}
+			out[field] = filepath.Join(dir, field)
 		}
 	}
-	return out, nil
+	return out, cleanup, nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

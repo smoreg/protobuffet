@@ -430,3 +430,71 @@ func TestPruneByAge(t *testing.T) {
 		t.Errorf("pruned without a policy: %+v", got)
 	}
 }
+
+func TestPublishFromFilePaths(t *testing.T) {
+	s, _ := NewStore(t.TempDir())
+	src := t.TempDir()
+
+	schemaPath := filepath.Join(src, "schema.zip")
+	artifactPath := filepath.Join(src, "go.zip")
+	if err := os.WriteFile(schemaPath, []byte("schema bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifactPath, []byte("module zip bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Uploads arrive as files on disk; copying them through memory is what
+	// made four concurrent publishes exceed the pod's limit.
+	v, err := s.Publish(PublishRequest{
+		Module:     Module{Owner: "acme", Name: "catalog"},
+		Version:    "v1.0.0",
+		SchemaPath: schemaPath,
+		Artifacts: []Artifact{{
+			Target: TargetGo, Name: "registry.test/gen/go/acme/catalog", Version: "v1.0.0", File: "go.zip",
+		}},
+		FilePaths: map[string]string{"go.zip": artifactPath},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := v.Artifacts[TargetGo]
+	if a.SHA256 != SHA256Hex([]byte("module zip bytes")) {
+		t.Errorf("sha256 = %q", a.SHA256)
+	}
+	if a.SHA1 == "" {
+		t.Error("sha1 missing")
+	}
+	if a.Size != int64(len("module zip bytes")) {
+		t.Errorf("size = %d", a.Size)
+	}
+	if v.SchemaSHA != SHA256Hex([]byte("schema bytes")) {
+		t.Errorf("schema digest = %q", v.SchemaSHA)
+	}
+	body, err := s.ReadAll(Module{Owner: "acme", Name: "catalog"}, "v1.0.0", "go.zip")
+	if err != nil || string(body) != "module zip bytes" {
+		t.Fatalf("stored artifact = %q, %v", body, err)
+	}
+
+	// A byte-identical retry from files must still be idempotent.
+	if _, err := s.Publish(PublishRequest{
+		Module:     Module{Owner: "acme", Name: "catalog"},
+		Version:    "v1.0.0",
+		SchemaPath: schemaPath,
+		Artifacts: []Artifact{{
+			Target: TargetGo, Name: "registry.test/gen/go/acme/catalog", Version: "v1.0.0", File: "go.zip",
+		}},
+		FilePaths: map[string]string{"go.zip": artifactPath},
+	}); err != nil {
+		t.Errorf("identical retry from files: %v", err)
+	}
+
+	// A missing path is a request error, not a panic.
+	if _, err := s.Publish(PublishRequest{
+		Module:     Module{Owner: "acme", Name: "other"},
+		Version:    "v1.0.0",
+		SchemaPath: filepath.Join(src, "missing.zip"),
+	}); err == nil {
+		t.Error("missing schema path accepted")
+	}
+}

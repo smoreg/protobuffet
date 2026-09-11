@@ -1,11 +1,13 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -421,5 +423,42 @@ func TestGarbageCollectionThroughTheAPI(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("gc with a write token: status %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestUploadFieldNamesCannotEscape(t *testing.T) {
+	ts, _ := newServer(t)
+	// The multipart field name becomes a file name on the server; a part
+	// called "../evil" must not land outside the upload directory.
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	if err := mw.WriteField("manifest", `{"module":"acme/catalog","version":"v1.0.0"}`); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"../escaped", "sub/dir"} {
+		w, err := mw.CreateFormFile(field, field)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("payload")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/modules/acme/catalog/versions", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 4 {
+		t.Errorf("status = %d, want a 4xx", resp.StatusCode)
 	}
 }

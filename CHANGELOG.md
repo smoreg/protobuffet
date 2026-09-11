@@ -23,6 +23,10 @@ until 1.0 the API and the on-disk layout may still change between minors.
 
 ### Changed
 
+- Uploads are streamed to disk and hashed in one pass instead of being held in
+  memory: four concurrent publishes of large artifacts no longer need more RAM
+  than the pod is allowed.
+
 - The compatibility gate is now `off` / `best-effort` / `required`, defaulting
   to `required`: the server refuses to start without buf and refuses a publish
   it could not verify.
