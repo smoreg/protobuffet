@@ -444,6 +444,9 @@ func (s *Server) setLabel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !s.requireModuleWrite(w, r, m.String()) {
+		return
+	}
 	var body struct {
 		Version string `json:"version"`
 	}
@@ -474,6 +477,9 @@ func (s *Server) setYanked(w http.ResponseWriter, r *http.Request, yanked bool) 
 	m, err := moduleFrom(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !s.requireModuleWrite(w, r, m.String()) {
 		return
 	}
 	var body struct {
@@ -509,6 +515,11 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	m, err := moduleFrom(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Checked before the upload is read: refusing after buffering artifacts
+	// wastes the concurrency slot and the memory.
+	if !s.requireModuleWrite(w, r, m.String()) {
 		return
 	}
 	select {

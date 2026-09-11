@@ -88,6 +88,23 @@ func (s *Server) requireScope(scope string, next http.Handler) http.Handler {
 	})
 }
 
+// requireModuleWrite checks the module scope of the authenticated token. It
+// answers 403 with the module named, because "forbidden" without it sends the
+// operator digging through token config to work out what was refused.
+func (s *Server) requireModuleWrite(w http.ResponseWriter, r *http.Request, module string) bool {
+	tok, ok := tokenFrom(r)
+	if !ok {
+		// Reached only when the route is public, which write routes never are.
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	if !tok.AllowsModule(module) {
+		http.Error(w, fmt.Sprintf("token %q may not write to module %s", tok.Subject, module), http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
 // tokenFrom returns the authenticated token, if any.
 func tokenFrom(r *http.Request) (config.Token, bool) {
 	t, ok := r.Context().Value(tokenKey).(config.Token)

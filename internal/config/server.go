@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -125,6 +126,32 @@ type Token struct {
 	Subject string   `yaml:"subject"`
 	SHA256  string   `yaml:"sha256"`
 	Scopes  []string `yaml:"scopes"`
+	// Modules limits which modules this credential may write to, as glob
+	// patterns over "owner/name" ("team1/*", "team1/catalog", "*"). Empty
+	// means every module, which is what a registry-wide CI token wants.
+	//
+	// Without this a leaked token from one team can publish under another
+	// team's name and take package names in every ecosystem the registry
+	// serves.
+	Modules []string `yaml:"modules"`
+}
+
+// AllowsModule reports whether the token may write to a module.
+func (t Token) AllowsModule(module string) bool {
+	if len(t.Modules) == 0 {
+		return true
+	}
+	for _, pattern := range t.Modules {
+		if pattern == "*" {
+			return true
+		}
+		// path.Match treats "/" as a separator, so "team1/*" matches
+		// team1/catalog but not team1/sub/thing, which cannot exist anyway.
+		if ok, err := path.Match(pattern, module); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Can reports whether the token carries a scope.
@@ -266,6 +293,17 @@ func (s Server) ValidateTokens() error {
 		}
 		if len(t.Scopes) == 0 {
 			return fmt.Errorf("tokens[%d] (%s): at least one scope is required", i, t.Subject)
+		}
+		for _, pattern := range t.Modules {
+			if pattern == "*" {
+				continue
+			}
+			if _, err := path.Match(pattern, "owner/name"); err != nil {
+				return fmt.Errorf("tokens[%d] (%s): module pattern %q is malformed: %w", i, t.Subject, pattern, err)
+			}
+			if strings.Count(pattern, "/") != 1 {
+				return fmt.Errorf("tokens[%d] (%s): module pattern %q must be owner/name", i, t.Subject, pattern)
+			}
 		}
 		for _, scope := range t.Scopes {
 			// A typo here silently produces a token that can do nothing.

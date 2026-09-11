@@ -7,6 +7,10 @@ until 1.0 the API and the on-disk layout may still change between minors.
 
 ### Added
 
+- Write tokens can be limited to a set of modules
+  (`modules: ["team1/*"]`), so a leaked CI credential cannot publish under
+  another team's name.
+
 - Python packages: wheels served through a PEP 503 index (`pip install
   --index-url`), with PEP 440 version mapping.
 - `go get` discovery: the registry answers `?go-get=1`, so consumers need only

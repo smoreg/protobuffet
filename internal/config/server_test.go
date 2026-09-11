@@ -125,3 +125,46 @@ func TestBreakingModeHelpers(t *testing.T) {
 		t.Error("enabled modes report disabled")
 	}
 }
+
+func TestTokenModuleScopes(t *testing.T) {
+	cases := []struct {
+		name     string
+		patterns []string
+		module   string
+		want     bool
+	}{
+		{"empty means every module", nil, "acme/catalog", true},
+		{"explicit wildcard", []string{"*"}, "acme/catalog", true},
+		{"owner wildcard", []string{"team1/*"}, "team1/catalog", true},
+		{"owner wildcard does not cross owners", []string{"team1/*"}, "team2/catalog", false},
+		{"exact module", []string{"team1/catalog"}, "team1/catalog", true},
+		{"exact module is exact", []string{"team1/catalog"}, "team1/orders", false},
+		{"several patterns", []string{"team1/*", "shared/common"}, "shared/common", true},
+		{"name wildcard across owners", []string{"*/catalog"}, "team9/catalog", true},
+		{"no pattern matches", []string{"team1/*"}, "acme/catalog", false},
+	}
+	for _, tc := range cases {
+		tok := Token{Subject: "t", Modules: tc.patterns}
+		if got := tok.AllowsModule(tc.module); got != tc.want {
+			t.Errorf("%s: AllowsModule(%q) with %v = %v, want %v", tc.name, tc.module, tc.patterns, got, tc.want)
+		}
+	}
+}
+
+func TestLoadServerRejectsMalformedModulePatterns(t *testing.T) {
+	digest := HashToken("t")
+	for name, pattern := range map[string]string{
+		"no slash":    "team1",
+		"two slashes": "team1/sub/thing",
+		"bad glob":    "team1/[",
+	} {
+		body := "tokens:\n  - {subject: a, sha256: " + digest + ", scopes: [write], modules: [\"" + pattern + "\"]}\n"
+		if _, err := LoadServer(writeServerConfig(t, body)); err == nil {
+			t.Errorf("%s: pattern %q accepted", name, pattern)
+		}
+	}
+	ok := "tokens:\n  - {subject: a, sha256: " + digest + ", scopes: [write], modules: [\"team1/*\", \"*\"]}\n"
+	if _, err := LoadServer(writeServerConfig(t, ok)); err != nil {
+		t.Errorf("valid patterns rejected: %v", err)
+	}
+}

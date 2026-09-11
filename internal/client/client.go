@@ -166,6 +166,14 @@ func (c *Client) Publish(ctx context.Context, man api.PublishManifest, files map
 	}
 	defer resp.Body.Close()
 
+	// A 409 comes in two shapes: the compatibility gate answers with a report
+	// in JSON, while a version or name conflict answers with plain text.
+	// Decoding the second as JSON turned a clear "name already taken" into
+	// "invalid character 'g'".
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return nil, false, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
 	var out api.PublishResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, false, fmt.Errorf("decode response: %w", err)

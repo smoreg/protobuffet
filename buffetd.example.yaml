@@ -38,9 +38,15 @@ retention:
 
 # Mint credentials with: buffet token
 tokens:
-  - subject: ci
+  # A CI token scoped to one team's modules: a leak cannot touch anyone else's
+  # names. Omit "modules" for a registry-wide credential.
+  - subject: team-catalog-ci
     sha256: "replace-me-with-the-digest-buffet-token-prints"
     scopes: [write]
-  - subject: developer
+    modules: ["catalog/*"]
+  - subject: platform-ci
     sha256: "another-digest"
+    scopes: [write]
+  - subject: developer
+    sha256: "a-third-digest"
     scopes: [read]

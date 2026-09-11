@@ -33,7 +33,18 @@ tokens:                              # paste this into buffetd.yaml
     scopes: [write]
 ```
 
-Scopes are `read`, `write` and `admin`. With `public_read: true` (the default)
+Scopes are `read`, `write` and `admin`. A write token can also be limited to
+the modules it may touch, which bounds what a leaked CI credential can reach:
+
+```yaml
+tokens:
+  - subject: team-catalog-ci
+    sha256: "..."
+    scopes: [write]
+    modules: ["catalog/*"]      # publish, label and yank, only under catalog/
+```
+
+Omit `modules` for a registry-wide credential. With `public_read: true` (the default)
 reading needs no token at all, which is what makes `go get` work without
 configuring credentials on every developer machine.
 
