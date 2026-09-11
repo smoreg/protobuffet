@@ -337,3 +337,59 @@ func TestCLIWhoamiAndJSON(t *testing.T) {
 		t.Errorf("info -json versions = %+v", idx.Versions)
 	}
 }
+
+func TestCLILabelYankAndVendor(t *testing.T) {
+	ts := registryServer(t)
+	t.Setenv("BUFFET_REGISTRY", ts.URL)
+	t.Setenv("BUFFET_TOKEN", cliToken)
+
+	t.Run("label", func(t *testing.T) {
+		code, stdout, stderr := execCLI(t, "label", "acme/catalog", "stable", "v1.0.0")
+		if code != 0 {
+			t.Fatalf("code=%d stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stdout, "stable") {
+			t.Errorf("stdout = %q", stdout)
+		}
+		if code, _, _ := execCLI(t, "label", "acme/catalog"); code != 2 {
+			t.Error("label with too few arguments succeeded")
+		}
+	})
+
+	t.Run("yank and unyank", func(t *testing.T) {
+		code, stdout, stderr := execCLI(t, "yank", "-reason", "bad build", "acme/catalog@v1.0.0")
+		if code != 0 {
+			t.Fatalf("yank: code=%d stderr=%q", code, stderr)
+		}
+		// The message has to say the version is still downloadable, or the
+		// next person assumes a yank broke every lock file.
+		if !strings.Contains(stdout, "downloadable") {
+			t.Errorf("yank output = %q", stdout)
+		}
+		if code, stdout, _ := execCLI(t, "unyank", "acme/catalog@v1.0.0"); code != 0 || !strings.Contains(stdout, "listed again") {
+			t.Errorf("unyank: code=%d stdout=%q", code, stdout)
+		}
+		// Without the @version form there is nothing to act on.
+		if code, _, _ := execCLI(t, "yank", "acme/catalog"); code != 2 {
+			t.Error("yank without a version succeeded")
+		}
+	})
+
+	t.Run("vendor without deps", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "buffet.yaml"), `
+version: v1
+module: acme/catalog
+proto: proto
+targets:
+  go: {module: registry.test/gen/go/acme/catalog, template: t, out: gen/go}
+`)
+		code, stdout, stderr := execCLI(t, "vendor", "-config", dir)
+		if code != 0 {
+			t.Fatalf("vendor: code=%d stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stdout, "nothing to vendor") {
+			t.Errorf("vendor output = %q", stdout)
+		}
+	})
+}

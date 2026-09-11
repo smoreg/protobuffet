@@ -315,3 +315,36 @@ func TestStoreLockIsExclusive(t *testing.T) {
 		t.Errorf("nil release = %v", err)
 	}
 }
+
+func TestReloadPicksUpChangesMadeOutsideTheProcess(t *testing.T) {
+	store, _ := NewStore(t.TempDir())
+	c, _ := NewCatalog(store)
+	if _, err := publishTo(t, c, "acme/catalog", "v1.0.0",
+		goArtifact("registry.test/gen/go/catalog", "v1.0.0")); err != nil {
+		t.Fatal(err)
+	}
+
+	// An offline gc run edits the store behind the catalog's back.
+	if _, err := store.Publish(PublishRequest{
+		Module:    Module{Owner: "acme", Name: "other"},
+		Version:   "v1.0.0",
+		SchemaZip: []byte("other"),
+		Artifacts: []Artifact{goArtifact("registry.test/gen/go/other", "v1.0.0")},
+		Files:     map[string][]byte{"go.zip": []byte("zip")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if mods, _ := c.ListModules(); len(mods) != 1 {
+		t.Fatalf("catalog saw the external change without a reload: %v", mods)
+	}
+	if err := c.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	mods, _ := c.ListModules()
+	if len(mods) != 2 {
+		t.Fatalf("after Reload modules = %v", mods)
+	}
+	if _, _, err := c.FindByTarget(TargetGo, "registry.test/gen/go/other"); err != nil {
+		t.Errorf("ownership not rebuilt: %v", err)
+	}
+}

@@ -192,3 +192,12 @@ func TestVendorReportsAMissingDependency(t *testing.T) {
 		t.Errorf("err = %v, want it to name the missing module", err)
 	}
 }
+
+func TestVendorGitignoreLine(t *testing.T) {
+	m := consumerModule(t, "")
+	// The vendor directory is derived state; committing it means reviewing
+	// someone else's protos in every diff.
+	if got := publish.VendorGitignore(m); got != "third_party/\n" {
+		t.Errorf("VendorGitignore = %q", got)
+	}
+}

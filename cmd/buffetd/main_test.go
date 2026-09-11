@@ -7,9 +7,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/smoreg/protobuffet/internal/config"
+	"github.com/smoreg/protobuffet/internal/registry"
 )
 
 func testConfig(t *testing.T) config.Server {
@@ -77,5 +80,80 @@ func TestBaseURLOrDerived(t *testing.T) {
 	}
 	if got := baseURLOrDerived("https://x.example"); got != "https://x.example" {
 		t.Errorf("set = %q", got)
+	}
+}
+
+func TestRunGCPrunesAndReportsOrphans(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Retention.KeepPseudoVersions = 1
+
+	// Publish two pseudo-versions and a release straight into the store, as a
+	// registry that has been taking CI pushes for a while would look.
+	store, err := registry.NewStore(cfg.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod := registry.Module{Owner: "acme", Name: "catalog"}
+	base := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	for i, v := range []string{
+		"v1.0.0",
+		"v0.0.0-20260101000000-aaaaaaaaaaaa",
+		"v0.0.0-20260901000000-bbbbbbbbbbbb",
+	} {
+		if _, err := store.Publish(registry.PublishRequest{
+			Module: mod, Version: v, SchemaZip: []byte(v),
+			Now: base.Add(time.Duration(i) * time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An orphaned directory, as a crash mid-publish leaves behind.
+	orphan := filepath.Join(cfg.Data, "modules", "acme", "catalog", "versions", "v7.7.7")
+	if err := os.MkdirAll(orphan, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// A dry run reports without touching anything.
+	if err := runGC(cfg, log, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadAll(mod, "v0.0.0-20260101000000-aaaaaaaaaaaa", "schema.zip"); err != nil {
+		t.Errorf("dry run deleted a version: %v", err)
+	}
+
+	if err := runGC(cfg, log, false); err != nil {
+		t.Fatal(err)
+	}
+	// The oldest pseudo-version goes, the newest stays, the release is never
+	// touched, and the orphan is gone.
+	if _, err := store.ReadAll(mod, "v0.0.0-20260101000000-aaaaaaaaaaaa", "schema.zip"); err == nil {
+		t.Error("old pseudo-version survived")
+	}
+	if _, err := store.ReadAll(mod, "v0.0.0-20260901000000-bbbbbbbbbbbb", "schema.zip"); err != nil {
+		t.Errorf("newest pseudo-version was pruned: %v", err)
+	}
+	if _, err := store.ReadAll(mod, "v1.0.0", "schema.zip"); err != nil {
+		t.Errorf("a release was pruned: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("orphaned directory survived")
+	}
+}
+
+func TestRunGCRefusesWhileTheRegistryHoldsTheLock(t *testing.T) {
+	cfg := testConfig(t)
+	if _, _, err := build(cfg, slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
+		t.Fatal(err)
+	}
+	// The running server holds the data directory; a second writer would
+	// interleave index rewrites with a publish.
+	err := runGC(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), true)
+	if err == nil {
+		t.Fatal("gc ran against a locked data directory")
+	}
+	if !strings.Contains(err.Error(), "/api/v1/gc") {
+		t.Errorf("err = %v, want it to point at the API", err)
 	}
 }

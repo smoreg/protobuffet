@@ -27,8 +27,8 @@ jobs:
           echo "total coverage: ${total}%"
           # The registry speaks four package-manager protocols; a drop here
           # means one of them lost its test.
-          awk -v t="$total" 'BEGIN { exit (t < 78) }' || {
-            echo "coverage ${total}% is below the 78% floor"; exit 1; }
+          awk -v t="$total" 'BEGIN { exit (t < 80) }' || {
+            echo "coverage ${total}% is below the 80% floor"; exit 1; }
 
   vulncheck:
     runs-on: ubuntu-latest
