@@ -100,6 +100,7 @@ Versions follow PEP 440 rather than semver: `v1.2.3` becomes `1.2.3`,
 | `PUT` | `/api/v1/modules/{owner}/{name}/labels/{label}` | write |
 | `PUT` | `/api/v1/modules/{owner}/{name}/versions/{version}/yank` | admin |
 | `DELETE` | `/api/v1/modules/{owner}/{name}/versions/{version}/yank` | admin |
+| `GET` | `/api/v1/whoami` | any token |
 | `GET` | `/api/v1/audit?limit=` | admin |
 | `POST` | `/api/v1/gc?dry_run=1` | admin |
 | `GET` | `/metrics` | read |
@@ -115,6 +116,10 @@ newest N, or `?versions=none` for labels and counts only.
 A publish is `multipart/form-data`: a `manifest` field holding JSON, plus one
 file part per artifact named by its file name (`schema.zip`, `go.zip`,
 `composer.zip`, `npm.tgz`).
+
+Scopes nest: `admin` implies `write`, `write` implies `read`. A write token may
+additionally be restricted to a set of modules, in which case publish, label
+and yank on anything else answer 403.
 
 Status codes worth knowing:
 

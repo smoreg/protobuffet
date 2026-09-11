@@ -198,9 +198,12 @@ buffet info      show versions, targets and labels of one module
 buffet label     move a label to a version
 buffet yank      hide a bad release, keeping it downloadable
 buffet unyank    undo a yank
+buffet whoami    show what the configured token can do
 buffet login     store a token for a registry
 buffet token     mint a token and print its config digest
 ```
+
+`list`, `info`, `whoami` and `publish` take `-json` for scripts.
 
 The server takes `buffetd -gc` to apply the retention policy, and reloads
 credentials on `SIGHUP`.

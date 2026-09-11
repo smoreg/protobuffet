@@ -86,6 +86,9 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /npm/", read(npmrepo.New(s.catalog, s.cfg.BaseURL)))
 	s.mux.Handle("GET /pypi/", read(pypirepo.New(s.catalog, s.cfg.BaseURL)))
 
+	// Any authenticated caller may ask what its own token can do; CI uses it
+	// to fail early on a rotated credential instead of at publish time.
+	s.mux.Handle("GET /api/v1/whoami", s.requireScope("read-authenticated", http.HandlerFunc(s.whoami)))
 	s.mux.Handle("GET /api/v1/modules", read(http.HandlerFunc(s.listModules)))
 	s.mux.Handle("GET /api/v1/modules/{owner}/{name}", read(http.HandlerFunc(s.getModule)))
 	s.mux.Handle("GET /api/v1/modules/{owner}/{name}/versions/{version}", read(http.HandlerFunc(s.getVersion)))
@@ -312,6 +315,24 @@ const (
 	defaultListLimit = 100
 	maxListLimit     = 1000
 )
+
+// whoami reports the identity behind the presented credential.
+func (s *Server) whoami(w http.ResponseWriter, r *http.Request) {
+	tok, ok := tokenFrom(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	modules := tok.Modules
+	if len(modules) == 0 {
+		modules = []string{"*"}
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Subject string   `json:"subject"`
+		Scopes  []string `json:"scopes"`
+		Modules []string `json:"modules"`
+	}{Subject: tok.Subject, Scopes: tok.Scopes, Modules: modules})
+}
 
 func (s *Server) listModules(w http.ResponseWriter, r *http.Request) {
 	mods, err := s.catalog.ListModules()

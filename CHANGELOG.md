@@ -7,6 +7,11 @@ until 1.0 the API and the on-disk layout may still change between minors.
 
 ### Added
 
+- `buffet whoami` and a `/api/v1/whoami` endpoint, so CI can check a
+  credential before it starts building rather than at publish time.
+- `-json` output for `list`, `info`, `whoami` and `publish`.
+- The client retries a network error or a 502/503/504 up to three times, and
+  `BUFFET_TIMEOUT` sets its timeout.
 - Write tokens can be limited to a set of modules
   (`modules: ["team1/*"]`), so a leaked CI credential cannot publish under
   another team's name.
@@ -53,6 +58,9 @@ until 1.0 the API and the on-disk layout may still change between minors.
   serving versions whose files were gone. Collection now goes through
   `POST /api/v1/gc`.
 - Validation errors returned 500 instead of 400.
+- Authorization middleware reassigned its captured scope, so the first request
+  to `/api/v1/whoami` changed how that route behaved for every later one.
+- Scopes now nest: a write token can read.
 - npm `dist-tags.latest` pointed at the highest version including prereleases,
   so publishing an RC silently made it the default install for everyone.
   Latest is now the newest stable release, with prereleases under `next`.

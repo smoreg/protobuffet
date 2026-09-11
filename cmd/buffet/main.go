@@ -38,6 +38,7 @@ usage:
   buffet yank <module>@<version>  hide a bad release (admin, keeps it downloadable)
   buffet unyank <module>@<version>  undo a yank
   buffet login [flags]            store a token for a registry
+  buffet whoami                   show what the configured token can do
   buffet token                    generate a token and its config digest
   buffet version                  print the version
 
@@ -45,6 +46,7 @@ common flags:
   -registry URL   registry root (env BUFFET_REGISTRY)
   -token TOKEN    API token (env BUFFET_TOKEN, BUFFET_TOKEN_FILE, or buffet login)
   -config PATH    module config, default ./buffet.yaml
+  -json           machine-readable output (list, info, whoami, publish)
 `
 
 func main() {
@@ -80,6 +82,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdYank(args[1:], stdout, false)
 	case "login":
 		err = cmdLogin(args[1:], stdout)
+	case "whoami":
+		err = cmdWhoami(args[1:], stdout)
 	case "token":
 		err = cmdToken(stdout)
 	case "version", "--version", "-version":
@@ -151,6 +155,7 @@ func cmdPublish(args []string, stdout io.Writer) error {
 	skipGenerate := fs.Bool("skip-generate", false, "publish existing generated output without running buf generate")
 	skipLint := fs.Bool("skip-lint", false, "skip buf lint")
 	dryRun := fs.Bool("dry-run", false, "build artifacts and print what would be pushed")
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	allowBreaking := fs.Bool("allow-breaking", false, "publish even if the change breaks consumers (admin token only)")
 	bufPath := fs.String("buf", "", "path to the buf binary")
 	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
@@ -213,6 +218,9 @@ func cmdPublish(args []string, stdout io.Writer) error {
 				resp.Breaking.Against, resp.Breaking.Findings)
 		}
 		return fmt.Errorf("registry refused the push")
+	}
+	if *asJSON {
+		return writeJSON(stdout, resp)
 	}
 	fmt.Fprintf(stdout, "\npublished %s@%s\n", resp.Module, resp.Version.Version) //nolint:errcheck
 	if b := resp.Breaking; b != nil {
@@ -277,10 +285,41 @@ func cmdCheck(args []string, stdout io.Writer) error {
 	return fmt.Errorf("breaking changes against %s@%s", m.Module, *against)
 }
 
+func cmdWhoami(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("whoami", flag.ExitOnError)
+	var rf registryFlags
+	addRegistryFlags(fs, &rf)
+	asJSON := fs.Bool("json", false, "machine-readable output")
+	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
+
+	c, err := rf.client()
+	if err != nil {
+		return err
+	}
+	id, err := c.Whoami(context.Background())
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return writeJSON(stdout, id)
+	}
+	fmt.Fprintf(stdout, "subject  %s\nscopes   %s\nmodules  %s\n", //nolint:errcheck
+		id.Subject, strings.Join(id.Scopes, ", "), strings.Join(id.Modules, ", "))
+	return nil
+}
+
+// writeJSON prints a value for scripts to consume.
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
 func cmdList(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	var rf registryFlags
 	addRegistryFlags(fs, &rf)
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
 
 	c, err := rf.client()
@@ -290,6 +329,9 @@ func cmdList(args []string, stdout io.Writer) error {
 	mods, err := c.ListModules(context.Background())
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		return writeJSON(stdout, mods)
 	}
 	if len(mods) == 0 {
 		fmt.Fprintln(stdout, "no modules published yet") //nolint:errcheck
@@ -307,6 +349,7 @@ func cmdInfo(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("info", flag.ExitOnError)
 	var rf registryFlags
 	addRegistryFlags(fs, &rf)
+	asJSON := fs.Bool("json", false, "machine-readable output")
 	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
 	if fs.NArg() != 1 {
 		return fmt.Errorf("info takes one module: %w", errUsage)
@@ -318,6 +361,9 @@ func cmdInfo(args []string, stdout io.Writer) error {
 	idx, err := c.Module(context.Background(), fs.Arg(0))
 	if err != nil {
 		return err
+	}
+	if *asJSON {
+		return writeJSON(stdout, idx)
 	}
 	labels := map[string][]string{}
 	for name, v := range idx.Labels {

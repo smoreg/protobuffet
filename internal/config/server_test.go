@@ -108,7 +108,12 @@ func TestTokenScopes(t *testing.T) {
 	if read.Can("write") || read.Can("admin") {
 		t.Error("read token has write or admin")
 	}
-	if !write.Can("write") || write.Can("admin") {
+	if !read.Can("read") {
+		t.Error("read token cannot read")
+	}
+	// Publishing without being able to read your own module would surprise
+	// everyone, and the distinction protects nothing.
+	if !write.Can("write") || !write.Can("read") || write.Can("admin") {
 		t.Error("write token scopes wrong")
 	}
 	// admin implies everything, which is what the API relies on.

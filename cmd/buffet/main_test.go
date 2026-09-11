@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -270,4 +271,69 @@ targets:
 			t.Errorf("findings missing from output: %q", stdout)
 		}
 	})
+}
+
+func TestCLIWhoamiAndJSON(t *testing.T) {
+	ts := registryServer(t)
+	t.Setenv("BUFFET_REGISTRY", ts.URL)
+	t.Setenv("BUFFET_TOKEN", cliToken)
+
+	// whoami is what CI runs to fail early on a rotated credential, instead
+	// of discovering it at publish time.
+	code, stdout, stderr := execCLI(t, "whoami")
+	if code != 0 {
+		t.Fatalf("whoami: code=%d stderr=%q", code, stderr)
+	}
+	for _, want := range []string{"subject", "cli", "admin"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("whoami output missing %q: %q", want, stdout)
+		}
+	}
+
+	code, stdout, stderr = execCLI(t, "whoami", "-json")
+	if code != 0 {
+		t.Fatalf("whoami -json: code=%d stderr=%q", code, stderr)
+	}
+	var id struct {
+		Subject string
+		Scopes  []string
+		Modules []string
+	}
+	if err := json.Unmarshal([]byte(stdout), &id); err != nil {
+		t.Fatalf("whoami -json is not valid JSON: %v\n%s", err, stdout)
+	}
+	if id.Subject != "cli" || len(id.Scopes) == 0 {
+		t.Errorf("identity = %+v", id)
+	}
+	// An unrestricted token reports "*" rather than an empty list, so a script
+	// does not have to guess what empty means.
+	if len(id.Modules) != 1 || id.Modules[0] != "*" {
+		t.Errorf("modules = %v", id.Modules)
+	}
+
+	code, stdout, _ = execCLI(t, "list", "-json")
+	if code != 0 {
+		t.Fatalf("list -json: code=%d", code)
+	}
+	var mods []struct{ Module, Latest string }
+	if err := json.Unmarshal([]byte(stdout), &mods); err != nil {
+		t.Fatalf("list -json: %v\n%s", err, stdout)
+	}
+	if len(mods) != 1 || mods[0].Module != "acme/catalog" {
+		t.Errorf("list -json = %+v", mods)
+	}
+
+	code, stdout, _ = execCLI(t, "info", "-json", "acme/catalog")
+	if code != 0 {
+		t.Fatalf("info -json: code=%d", code)
+	}
+	var idx struct {
+		Versions []struct{ Version string }
+	}
+	if err := json.Unmarshal([]byte(stdout), &idx); err != nil {
+		t.Fatalf("info -json: %v\n%s", err, stdout)
+	}
+	if len(idx.Versions) != 1 {
+		t.Errorf("info -json versions = %+v", idx.Versions)
+	}
 }

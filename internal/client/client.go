@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -26,18 +27,28 @@ type Client struct {
 
 // New builds a client against a registry root URL.
 func New(baseURL, token string) *Client {
+	timeout := 2 * time.Minute
+	if v := os.Getenv("BUFFET_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			timeout = d
+		}
+	}
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		Token:   token,
-		HTTP:    &http.Client{Timeout: 2 * time.Minute},
+		HTTP:    &http.Client{Timeout: timeout},
 	}
 }
+
+// maxAttempts covers a registry restart or a proxy blip. Publishes are
+// idempotent for identical content, so retrying one is safe.
+const maxAttempts = 3
 
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.doWithRetry(req)
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +58,61 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("%s %s: %s: %s", req.Method, req.URL.Path, resp.Status, strings.TrimSpace(string(body)))
 	}
 	return resp, nil
+}
+
+// doWithRetry retries a request that failed in a way that may pass next time:
+// a network error, or 502/503/504 from a proxy or a restarting registry. A
+// 4xx is the caller's problem and is never retried.
+func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil && req.GetBody != nil {
+		// GetBody is set by NewRequestWithContext for in-memory bodies, which
+		// is what every request here uses.
+		rc, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		body, err = io.ReadAll(rc)
+		rc.Close() //nolint:errcheck // read side
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if body != nil {
+			req.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		resp, err := c.HTTP.Do(req)
+		switch {
+		case err == nil && !retriableStatus(resp.StatusCode):
+			return resp, nil
+		case err == nil:
+			lastErr = fmt.Errorf("%s: %s", req.URL.Path, resp.Status)
+			resp.Body.Close() //nolint:errcheck // discarding a retriable response
+		default:
+			lastErr = err
+		}
+		if attempt == maxAttempts || req.Context().Err() != nil {
+			break
+		}
+		select {
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+		}
+	}
+	return nil, fmt.Errorf("after %d attempts: %w", maxAttempts, lastErr)
+}
+
+func retriableStatus(code int) bool {
+	switch code {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, out any) error {
@@ -60,6 +126,20 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// Identity describes the credential the registry sees.
+type Identity struct {
+	Subject string   `json:"subject"`
+	Scopes  []string `json:"scopes"`
+	Modules []string `json:"modules"`
+}
+
+// Whoami reports what the configured token can do.
+func (c *Client) Whoami(ctx context.Context) (Identity, error) {
+	var out Identity
+	err := c.getJSON(ctx, "/api/v1/whoami", &out)
+	return out, err
 }
 
 // ModuleSummary is one row of the module listing.

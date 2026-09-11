@@ -68,9 +68,19 @@ func (s *Server) authenticate(token string) (config.Token, bool) {
 }
 
 // requireScope wraps a handler with token authentication.
+//
+// "read-authenticated" is read access that still needs a credential, because
+// the answer is about the credential itself.
 func (s *Server) requireScope(scope string, next http.Handler) http.Handler {
+	// Decided once, at wiring time. Reassigning the captured parameter inside
+	// the handler changed the route's behaviour for every later request.
+	needsToken := scope == "read-authenticated"
+	required := scope
+	if needsToken {
+		required = "read"
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if scope == "read" && s.cfg.PublicRead {
+		if required == "read" && s.cfg.PublicRead && !needsToken {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -80,8 +90,8 @@ func (s *Server) requireScope(scope string, next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if !tok.Can(scope) {
-			http.Error(w, "forbidden: missing scope "+scope, http.StatusForbidden)
+		if !tok.Can(required) {
+			http.Error(w, "forbidden: missing scope "+required, http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tokenKey, tok)))

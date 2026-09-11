@@ -155,9 +155,16 @@ func (t Token) AllowsModule(module string) bool {
 }
 
 // Can reports whether the token carries a scope.
+//
+// Scopes nest: admin implies write, write implies read. A CI credential that
+// may publish but may not read its own module would surprise everyone, and
+// nothing is protected by the distinction.
 func (t Token) Can(scope string) bool {
 	for _, s := range t.Scopes {
-		if s == scope || s == "admin" {
+		switch {
+		case s == scope, s == "admin":
+			return true
+		case s == "write" && scope == "read":
 			return true
 		}
 	}

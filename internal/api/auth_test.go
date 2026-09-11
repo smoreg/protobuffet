@@ -276,3 +276,34 @@ func TestModuleScopedTokenCannotReachOtherModules(t *testing.T) {
 		t.Error("a scoped token yanked a version outside its scope")
 	}
 }
+
+// TestScopeIsNotStickyAcrossRequests guards a bug that only showed on the
+// second call: the middleware reassigned its captured scope parameter, so one
+// request permanently changed how the route behaved for everyone after it.
+func TestScopeIsNotStickyAcrossRequests(t *testing.T) {
+	ts, _ := newServer(t) // public_read is on, which is what exposed it
+	for i := range 3 {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/whoami", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("call %d: status %d, want 200", i+1, resp.StatusCode)
+		}
+	}
+	// And it still refuses an anonymous caller, public reads or not.
+	resp, err := http.Get(ts.URL + "/api/v1/whoami")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anonymous whoami: status %d, want 401", resp.StatusCode)
+	}
+}
