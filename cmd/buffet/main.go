@@ -34,6 +34,7 @@ usage:
   buffet check [flags]            check compatibility against the registry
   buffet list [flags]             list modules in the registry
   buffet info <owner/name> [flags]  show versions of one module
+  buffet vendor [flags]           fetch dependency schemas from the registry
   buffet label <module> <label> <version>  move a label
   buffet yank <module>@<version>  hide a bad release (admin, keeps it downloadable)
   buffet unyank <module>@<version>  undo a yank
@@ -74,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdList(args[1:], stdout)
 	case "info":
 		err = cmdInfo(args[1:], stdout)
+	case "vendor":
+		err = cmdVendor(args[1:], stdout)
 	case "label":
 		err = cmdLabel(args[1:], stdout)
 	case "yank":
@@ -383,6 +386,41 @@ func cmdInfo(args []string, stdout io.Writer) error {
 			v.Version, v.CreatedAt.Format(time.RFC3339), strings.Join(targets, " "), strings.Join(labels[v.Version], ","))
 	}
 	return w.Flush()
+}
+
+func cmdVendor(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("vendor", flag.ExitOnError)
+	var rf registryFlags
+	addRegistryFlags(fs, &rf)
+	configPath := fs.String("config", ".", "module config file or directory")
+	_ = fs.Parse(args) // ExitOnError: a parse failure has already exited
+
+	m, err := config.LoadModule(*configPath)
+	if err != nil {
+		return err
+	}
+	if len(m.Deps) == 0 {
+		fmt.Fprintln(stdout, "no deps declared in buffet.yaml, nothing to vendor") //nolint:errcheck
+		return nil
+	}
+	c, err := rf.client()
+	if err != nil {
+		return err
+	}
+	vendored, err := publish.Vendor(context.Background(), c, m)
+	if err != nil {
+		return err
+	}
+	for _, d := range vendored {
+		rel, relErr := filepath.Rel(m.Dir, d.Path)
+		if relErr != nil {
+			rel = d.Path
+		}
+		fmt.Fprintf(stdout, "%-24s %-12s %2d files -> %s\n", d.Module, d.Version, d.Files, rel) //nolint:errcheck
+	}
+	fmt.Fprintf(stdout, "\nwrote buf.vendor.yaml; generate with:\n  buf generate --config buf.vendor.yaml\n") //nolint:errcheck
+	fmt.Fprintf(stdout, "add to .gitignore:\n  %s", publish.VendorGitignore(m))                               //nolint:errcheck
+	return nil
 }
 
 func cmdLabel(args []string, stdout io.Writer) error {

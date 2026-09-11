@@ -89,6 +89,24 @@ version and refuses the push if it would break consumers.
 
 A working example is in [`examples/catalog`](examples/catalog).
 
+### Depending on another module
+
+Schemas that import each other do not need buf.build. Declare the dependency:
+
+```yaml
+deps:
+  - module: acme/shared
+    version: stable        # a version or a label
+```
+
+```sh
+buffet vendor                          # downloads the schemas, writes buf.vendor.yaml
+buf generate --config buf.vendor.yaml  # imports now resolve
+```
+
+`buffet vendor` rebuilds the vendor directory from scratch each run, so a
+dependency that was removed does not linger and keep compiling.
+
 ## Consume it
 
 **Go** — the registry answers `go get` discovery, so nothing but `GOPRIVATE`
@@ -165,7 +183,8 @@ surface narrow.
 | Breaking-change gate on push | yes | yes |
 | Versions, labels, immutability | yes | yes |
 | Hosted code generation (remote plugins) | yes | no, generation is local |
-| Schema dependencies (`deps:` resolution) | yes | no, use buf.build or git |
+| Schema dependencies between your own modules | yes | yes, `buffet vendor` |
+| Public schema dependencies (googleapis etc.) | yes | vendor once, then publish or commit |
 | Generated documentation, search | yes | no |
 | Organizations, RBAC, SSO, SCIM | yes | no, tokens with read/write scopes |
 | Package-name ownership across modules | yes | yes |
@@ -182,8 +201,8 @@ gate.
 - Scopes are coarse: `read`, `write`, `admin`. A write token can be limited to
   a set of modules (`modules: ["team1/*"]`), but package names inside those
   modules are not otherwise constrained.
-- The registry does not host schema dependencies. `deps:` in `buf.yaml` still
-  resolves through buf.build or vendored copies.
+- Public schema dependencies (googleapis, protovalidate) are not proxied: to
+  use one without buf.build, `buf export` it once and publish it as a module.
 - No generated documentation browser.
 - Generation runs on the client. If your CI cannot run `buf`, this is not for
   you.
@@ -193,6 +212,7 @@ gate.
 ```
 buffet publish   generate SDKs, pack and push a version
 buffet check     compare local schemas against the registry without publishing
+buffet vendor    fetch dependency schemas from the registry
 buffet list      list modules
 buffet info      show versions, targets and labels of one module
 buffet label     move a label to a version

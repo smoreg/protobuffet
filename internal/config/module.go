@@ -21,9 +21,23 @@ type Module struct {
 	Module  string  `yaml:"module"`
 	Proto   string  `yaml:"proto"`
 	Targets Targets `yaml:"targets"`
+	// Deps are other modules in this registry whose protos this one imports.
+	// buf resolves `deps:` in buf.yaml through buf.build; this resolves
+	// through the registry you already run, which is the point of running it.
+	Deps []Dep `yaml:"deps"`
+	// Vendor is where `buffet vendor` writes them, default third_party.
+	Vendor string `yaml:"vendor"`
 
 	// Dir is the directory the config was loaded from, not part of the file.
 	Dir string `yaml:"-"`
+}
+
+// Dep is a schema module this one imports.
+type Dep struct {
+	// Module is owner/name in the registry.
+	Module string `yaml:"module"`
+	// Version is a version or a label; "latest" when empty.
+	Version string `yaml:"version"`
 }
 
 // Targets holds the per-ecosystem publishing settings. A nil target is simply
@@ -122,6 +136,20 @@ func (m *Module) validate() error {
 	}
 	if m.Proto == "" {
 		m.Proto = "."
+	}
+	if m.Vendor == "" {
+		m.Vendor = "third_party"
+	}
+	for i, d := range m.Deps {
+		if d.Module == "" {
+			return fmt.Errorf("deps[%d]: module is required (owner/name)", i)
+		}
+		if strings.Count(d.Module, "/") != 1 {
+			return fmt.Errorf("deps[%d]: module %q must be owner/name", i, d.Module)
+		}
+		if d.Version == "" {
+			m.Deps[i].Version = "latest"
+		}
 	}
 	if m.Targets.Go == nil && m.Targets.Composer == nil && m.Targets.NPM == nil && m.Targets.Python == nil {
 		return fmt.Errorf("at least one target is required")

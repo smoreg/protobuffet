@@ -57,14 +57,30 @@ PATH.
 
 ## 4. Deal with dependencies
 
-`deps:` in `buf.yaml` still resolves through buf.build. Three options, in
-order of how much they cost:
+**Your own modules** move with you. Declare them in `buffet.yaml` and vendor
+from the registry:
 
-- **Keep resolving from buf.build** if CI can reach it. Nothing to do.
-- **Vendor the dependency**: `buf export buf.build/googleapis/googleapis -o
-  third_party/` and add the directory to `buf.yaml` as another module.
-- **Publish it to your own registry** as an ordinary module, then vendor from
-  there.
+```yaml
+deps:
+  - module: acme/shared
+    version: stable
+```
+
+```sh
+buffet vendor
+buf generate --config buf.vendor.yaml
+```
+
+**Public modules** (googleapis, protovalidate) are not proxied. Export one
+once and publish it as an ordinary module of your registry:
+
+```sh
+buf export buf.build/googleapis/googleapis -o /tmp/googleapis
+# add a buf.yaml and a buffet.yaml naming it googleapis/googleapis, then
+buffet publish -config /tmp/googleapis -version v1.0.0 -label main
+```
+
+After that it is a dependency like any other, and CI never reaches buf.build.
 
 ## 5. Publish and check
 

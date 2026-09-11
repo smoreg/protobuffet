@@ -7,6 +7,9 @@ until 1.0 the API and the on-disk layout may still change between minors.
 
 ### Added
 
+- `buffet vendor`: schema dependencies between modules of your own registry,
+  without buf.build. It downloads each dependency's schema archive and writes
+  a buf workspace that makes the imports resolve.
 - `buffet whoami` and a `/api/v1/whoami` endpoint, so CI can check a
   credential before it starts building rather than at publish time.
 - `-json` output for `list`, `info`, `whoami` and `publish`.
