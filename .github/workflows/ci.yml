@@ -15,7 +15,7 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go vet ./...
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.1.6
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
@@ -83,10 +83,34 @@ jobs:
           tags: protobuffet:ci
       - name: the image actually runs
         run: |
+          set -x
+          # No -v: this is the command in the README, and an anonymous volume
+          # must not leave the server unable to write its data directory.
           docker run -d --name pb -p 8080:8080 -e BUFFET_ADMIN_TOKEN=ci-token protobuffet:ci
-          for _ in $(seq 1 30); do curl -sf localhost:8080/healthz && break; sleep 1; done
-          curl -sf localhost:8080/healthz
+          for _ in $(seq 1 30); do
+            curl -sf localhost:8080/healthz && break
+            sleep 1
+          done
+          if ! curl -sf localhost:8080/healthz; then
+            echo "::error::the image did not become healthy; container log follows"
+            docker logs pb || true
+            docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' pb || true
+            exit 1
+          fi
           # buf ships in the image; without it the compatibility gate cannot start
           docker exec pb /usr/local/bin/buf --version
           docker logs pb | grep -q "compatibility checks enabled"
+          # And with a mounted volume, which is how it runs in production.
           docker rm -f pb
+          docker volume create pbdata
+          docker run -d --name pb2 -p 8081:8080 -v pbdata:/data -e BUFFET_ADMIN_TOKEN=ci-token protobuffet:ci
+          for _ in $(seq 1 30); do
+            curl -sf localhost:8081/healthz && break
+            sleep 1
+          done
+          if ! curl -sf localhost:8081/healthz; then
+            echo "::error::the image did not become healthy on a named volume"
+            docker logs pb2 || true
+            exit 1
+          fi
+          docker rm -f pb2

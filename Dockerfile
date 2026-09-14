@@ -21,10 +21,17 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
         -o /out/buffet ./cmd/buffet
 
+# The data directory is created here so the final image carries it owned by
+# the nonroot user. Left to the runtime, an anonymous volume is created as
+# root and the server refuses to start, which is correct but unhelpful for
+# anyone running the image straight from the README.
+RUN mkdir -p /data-skeleton
+
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/buffetd /usr/local/bin/buffetd
 COPY --from=build /out/buffet /usr/local/bin/buffet
 COPY --from=buf /usr/local/bin/buf /usr/local/bin/buf
+COPY --from=build --chown=65532:65532 /data-skeleton /data
 
 USER nonroot:nonroot
 VOLUME /data
