@@ -100,6 +100,10 @@ jobs:
           # buf ships in the image; without it the compatibility gate cannot start
           docker exec pb /usr/local/bin/buf --version
           docker logs pb | grep -q "compatibility checks enabled"
+          # Readiness is what the deployment probes; a green liveness with a
+          # broken volume would still take traffic.
+          curl -sf localhost:8080/readyz | grep -q '"ready": true'
+          curl -sf localhost:8080/version | grep -q '"buf"' 
           # And with a mounted volume, which is how it runs in production.
           docker rm -f pb
           docker volume create pbdata

@@ -32,6 +32,8 @@ spec:
             # GOPRIVATE, and the prefix of every Go module path served here.
             - name: BUFFET_BASE_URL
               value: https://schemas.example.com
+            - name: BUFFET_LOG_LEVEL
+              value: info
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -42,7 +44,10 @@ spec:
             # buf unpacks schema archives here during the compatibility check.
             - {name: tmp, mountPath: /tmp}
           readinessProbe:
-            httpGet: {path: /healthz, port: http}
+            # Readiness checks that the volume is writable and the gate can
+            # run; liveness stays on /healthz, because restarting the pod
+            # cannot fix either of those.
+            httpGet: {path: /readyz, port: http}
             initialDelaySeconds: 2
             periodSeconds: 10
           livenessProbe:

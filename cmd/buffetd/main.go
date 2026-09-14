@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,21 @@ func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "buffetd:", err) //nolint:errcheck
 		os.Exit(1)
+	}
+}
+
+// logLevel reads BUFFET_LOG_LEVEL, so an operator can turn on debug without
+// a new image.
+func logLevel() slog.Level {
+	switch strings.ToLower(os.Getenv("BUFFET_LOG_LEVEL")) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }
 
@@ -52,10 +68,14 @@ func build(cfg config.Server, log *slog.Logger) (*http.Server, *api.Server, erro
 	if err != nil {
 		return nil, nil, err
 	}
+	srv.SetVersion(version)
 	return &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// A request line and headers have no business being large here; the
+		// body limit is enforced per handler.
+		MaxHeaderBytes: 64 << 10,
 		// Uploads and downloads can be large and slow; the body limit is
 		// enforced per handler instead of by a write timeout.
 		IdleTimeout: 2 * time.Minute,
@@ -126,7 +146,7 @@ func run() error {
 		return nil
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel()}))
 
 	cfg, err := config.LoadServer(*configPath)
 	if err != nil {

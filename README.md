@@ -241,6 +241,7 @@ credentials on `SIGHUP`.
 | [`docs/protocol.md`](docs/protocol.md) | the endpoints each package manager uses |
 | [`docs/migration-from-bsr.md`](docs/migration-from-bsr.md) | moving off the Buf Schema Registry |
 | [`docs/runbook.md`](docs/runbook.md) | diagnosing what a client sees, rotation, restore |
+| [`docs/production-checklist.md`](docs/production-checklist.md) | what to settle before the first team depends on it |
 
 ## Development
 

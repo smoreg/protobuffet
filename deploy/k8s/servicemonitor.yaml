@@ -1,0 +1,15 @@
+# Only useful with the Prometheus operator installed; apply it separately if
+# the CRD is absent, or kubectl will refuse the whole kustomization.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: protobuffet
+  labels:
+    app: protobuffet
+spec:
+  selector:
+    matchLabels: {app: protobuffet}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

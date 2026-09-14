@@ -105,6 +105,13 @@ Versions follow PEP 440 rather than semver: `v1.2.3` becomes `1.2.3`,
 | `POST` | `/api/v1/gc?dry_run=1` | admin |
 | `GET` | `/metrics` | read |
 | `GET` | `/healthz` | none |
+| `GET` | `/readyz` | none |
+| `GET` | `/version` | none |
+
+`/healthz` says the process is up; `/readyz` additionally checks that the data
+directory is writable, that the compatibility gate can run when it is
+required, and that no package name is claimed by two modules. Use the first
+for liveness and the second for readiness.
 
 Listings are paginated: `/api/v1/modules?limit=100&cursor=<last module>`
 returns `{"modules": [...], "next": "..."}`, and `next` is empty on the last

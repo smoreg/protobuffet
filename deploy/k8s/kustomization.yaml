@@ -8,4 +8,6 @@ resources:
   - service.yaml
   - ingress.yaml
   - networkpolicy.yaml
+  - cronjobs.yaml
+  # - servicemonitor.yaml   # needs the Prometheus operator CRDs
   # secret.example.yaml is a template; create the real secret out of band.

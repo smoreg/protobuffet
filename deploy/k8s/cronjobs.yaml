@@ -1,0 +1,84 @@
+# Garbage collection and backups. Both talk to the running registry rather
+# than to its volume: a second process writing the data directory would
+# interleave index rewrites, and the server refuses to let that happen.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: protobuffet-gc
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: gc
+              image: curlimages/curl:8.11.1
+              env:
+                - name: ADMIN_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: protobuffet-admin, key: token}
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  curl -sS --fail-with-body -X POST \
+                    -H "Authorization: Bearer $ADMIN_TOKEN" \
+                    http://protobuffet/api/v1/gc
+---
+# Backups tar the volume from a pod that mounts it read-only, so nothing here
+# can write to the registry.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: protobuffet-backup
+spec:
+  schedule: "43 2 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            fsGroup: 65532
+          containers:
+            - name: backup
+              image: alpine:3.21
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+                  tar czf "/backup/protobuffet-${stamp}.tgz" -C /data .
+                  # Keep a fortnight; versions are immutable, so old archives
+                  # stay valid and only grow in number.
+                  find /backup -name 'protobuffet-*.tgz' -mtime +14 -delete
+              volumeMounts:
+                - {name: data, mountPath: /data, readOnly: true}
+                - {name: backup, mountPath: /backup}
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: protobuffet-data
+                readOnly: true
+            - name: backup
+              persistentVolumeClaim: {claimName: protobuffet-backup}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: protobuffet-backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi

@@ -36,5 +36,9 @@ COPY --from=build --chown=65532:65532 /data-skeleton /data
 USER nonroot:nonroot
 VOLUME /data
 EXPOSE 8080
+
+# distroless has no shell and no curl, so the check runs the binary itself.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/buffet", "version"]
 ENV BUFFET_DATA=/data BUFFET_LISTEN=:8080
 ENTRYPOINT ["/usr/local/bin/buffetd"]

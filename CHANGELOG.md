@@ -9,6 +9,11 @@ First release. Everything below is new.
 
 ### Added
 
+- `/readyz` and `/version`; readiness checks the data volume, the
+  compatibility gate and package-name conflicts.
+- `BUFFET_LOG_LEVEL`, a container `HEALTHCHECK`, CronJobs for collection and
+  backups, a ServiceMonitor, and a production checklist.
+
 - `buffet vendor`: schema dependencies between modules of your own registry,
   without buf.build. It downloads each dependency's schema archive and writes
   a buf workspace that makes the imports resolve.

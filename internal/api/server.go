@@ -43,6 +43,72 @@ type Server struct {
 	audit      *auditLog
 	// tokens holds the live credential set, swapped on reload.
 	tokens atomic.Pointer[[]config.Token]
+	// version is reported by /version, for matching a running pod to a build.
+	version string
+}
+
+// SetVersion records the build identifier reported by /version.
+func (s *Server) SetVersion(v string) { s.version = v }
+
+func (s *Server) bufPath() string {
+	if s.buf == nil {
+		return ""
+	}
+	return s.buf.Path()
+}
+
+// readyz reports whether this instance can serve and accept publishes.
+func (s *Server) readyz(w http.ResponseWriter, _ *http.Request) {
+	type check struct {
+		Name string `json:"name"`
+		OK   bool   `json:"ok"`
+		Note string `json:"note,omitempty"`
+	}
+	checks := []check{}
+	ready := true
+
+	// The data directory is the whole registry; a volume that went read-only
+	// serves reads for a while and fails every publish.
+	probe, err := os.CreateTemp(s.catalog.Root(), ".readyz-")
+	if err != nil {
+		checks = append(checks, check{Name: "data_writable", OK: false, Note: err.Error()})
+		ready = false
+	} else {
+		name := probe.Name()
+		probe.Close()   //nolint:errcheck // probe only
+		os.Remove(name) //nolint:errcheck // probe only
+		checks = append(checks, check{Name: "data_writable", OK: true})
+	}
+
+	// In required mode a missing buf means every publish will be refused, so
+	// the instance is not ready even though it answers reads.
+	switch {
+	case s.cfg.BreakingCheck == config.BreakingRequired && s.buf == nil:
+		checks = append(checks, check{Name: "compatibility_gate", OK: false, Note: "buf unavailable"})
+		ready = false
+	case s.cfg.BreakingCheck.Enabled():
+		checks = append(checks, check{Name: "compatibility_gate", OK: true})
+	}
+
+	// A name claimed by two modules is served ambiguously until an operator
+	// sorts it out; surfacing it here beats finding it in a log weeks later.
+	if conflicts := s.catalog.Conflicts(); len(conflicts) > 0 {
+		checks = append(checks, check{
+			Name: "package_names", OK: false,
+			Note: fmt.Sprintf("%d package names claimed by two modules", len(conflicts)),
+		})
+	} else {
+		checks = append(checks, check{Name: "package_names", OK: true})
+	}
+
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, struct {
+		Ready  bool    `json:"ready"`
+		Checks []check `json:"checks"`
+	}{Ready: ready, Checks: checks})
 }
 
 // New builds a server. In the default "required" mode a missing buf binary is
@@ -104,8 +170,20 @@ func (s *Server) routes() {
 	// Go module paths live under this prefix by convention; discovery for
 	// them, and for any other path, is handled by the catch-all below.
 	s.mux.Handle("GET /gen/", read(http.HandlerFunc(s.ui)))
+	// Liveness: the process is up. Kubernetes restarts the pod when this
+	// fails, so it must not depend on anything a restart cannot fix.
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte("ok\n")) //nolint:errcheck // a failed write means the client is gone
+	})
+	// Readiness: the registry can actually serve. A pod whose volume went
+	// read-only should leave the load balancer rather than be restarted into
+	// the same state.
+	s.mux.HandleFunc("GET /readyz", s.readyz)
+	s.mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, struct {
+			Version string `json:"version"`
+			Buf     string `json:"buf,omitempty"`
+		}{Version: s.version, Buf: s.bufPath()})
 	})
 	s.mux.Handle("GET /metrics", read(http.HandlerFunc(s.serveMetrics)))
 	s.mux.Handle("GET /api/v1/audit", admin(s.serveAudit))

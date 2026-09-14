@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -461,4 +462,67 @@ func TestUploadFieldNamesCannotEscape(t *testing.T) {
 	if resp.StatusCode/100 != 4 {
 		t.Errorf("status = %d, want a 4xx", resp.StatusCode)
 	}
+}
+
+func TestReadyzReflectsWhatBlocksServing(t *testing.T) {
+	// A healthy instance reports every check.
+	ts, _ := newServer(t)
+	body := get(t, ts.URL+"/readyz")
+	for _, want := range []string{`"ready": true`, "data_writable", "package_names"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("readyz missing %q:\n%s", want, body)
+		}
+	}
+	if v := get(t, ts.URL+"/version"); !strings.Contains(v, "version") {
+		t.Errorf("version = %q", v)
+	}
+}
+
+func TestReadyzFailsWhenTheGateCannotRun(t *testing.T) {
+	store, err := registry.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := registry.NewCatalog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultServer()
+	cfg.BaseURL = ""
+	// best-effort starts without buf; the instance answers reads but will
+	// publish unchecked, so it must not be advertised as ready.
+	cfg.BreakingCheck = config.BreakingBestEffort
+	cfg.BufPath = "/nonexistent/buf"
+	cfg.Tokens = []config.Token{{Subject: "t", SHA256: config.HashToken(testToken), Scopes: []string{"write"}}}
+
+	srv, err := api.New(cfg, catalog, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// best-effort is a deliberate choice, so it stays ready; required is not.
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("best-effort readyz = %d, want 200", resp.StatusCode)
+	}
+	// Liveness must not depend on it: restarting the pod will not install buf.
+	if code := statusOf(t, ts.URL+"/healthz"); code != http.StatusOK {
+		t.Errorf("healthz = %d", code)
+	}
+}
+
+func statusOf(t *testing.T, url string) int {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
 }
