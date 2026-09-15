@@ -17,7 +17,7 @@ jobs:
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1.6
+          version: v2.13.2
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go test -race -coverpkg=./... -coverprofile=coverage.out ./...
       - name: coverage gate
@@ -99,7 +99,8 @@ jobs:
           fi
           # buf ships in the image; without it the compatibility gate cannot start
           docker exec pb /usr/local/bin/buf --version
-          docker logs pb | grep -q "compatibility checks enabled"
+          # The server logs to stderr; piping only stdout finds nothing.
+          docker logs pb 2>&1 | grep -q "compatibility checks enabled"
           # Readiness is what the deployment probes; a green liveness with a
           # broken volume would still take traffic.
           curl -sf localhost:8080/readyz | grep -q '"ready": true'

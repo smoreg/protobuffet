@@ -636,7 +636,9 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxUploadBytes)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	// The body is already capped by the reader above, and parts larger than
+	// this spill to temporary files rather than staying in memory.
+	if err := r.ParseMultipartForm(32 << 20); err != nil { //nolint:gosec // G120: bounded by MaxBytesReader
 		http.Error(w, "invalid multipart body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
