@@ -53,7 +53,7 @@ jobs:
         with:
           php-version: "8.2"
           tools: composer
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install "protobuf>=5.27"
