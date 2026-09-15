@@ -3,6 +3,15 @@
 Notable changes, newest first. Versions follow [semver](https://semver.org);
 until 1.0 the API and the on-disk layout may still change between minors.
 
+## 0.1.2 — 2026-09-15
+
+### Fixed
+
+- The release itself: binaries ship as two archives, one per binary, because
+  the server is not built for Windows and an archive whose contents differ by
+  platform is a surprise when unpacked. The workflow also installs syft, which
+  the SBOM step needs.
+
 ## 0.1.1 — 2026-09-15
 
 ### Fixed

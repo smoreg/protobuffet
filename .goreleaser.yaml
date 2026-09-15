@@ -26,12 +26,22 @@ builds:
     ldflags:
       - -s -w -X main.version={{.Version}}
 
+# Two archives rather than one: the server is not built for Windows, and an
+# archive whose contents differ per platform is a surprise when unpacked.
 archives:
-  - formats: [tar.gz]
+  - id: cli
+    ids: [buffet]
+    name_template: "buffet_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
     format_overrides:
       - goos: windows
         formats: [zip]
     files: [README.md, LICENSE, docs/*]
+  - id: server
+    ids: [buffetd]
+    name_template: "buffetd_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files: [README.md, LICENSE, buffetd.example.yaml, docs/*]
 
 checksum:
   name_template: checksums.txt
