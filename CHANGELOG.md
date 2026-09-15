@@ -3,7 +3,16 @@
 Notable changes, newest first. Versions follow [semver](https://semver.org);
 until 1.0 the API and the on-disk layout may still change between minors.
 
-## 0.1.0 — 2026-09-11
+## 0.1.1 — 2026-09-15
+
+### Fixed
+
+- The CLI did not build for Windows: the data-directory lock uses flock, which
+  the Windows syscall package does not have. The lock is now Unix-only, with a
+  stand-in that refuses to start the server elsewhere, and CI cross-compiles
+  every released platform.
+
+## 0.1.0 — 2026-09-15
 
 First release. Everything below is new.
 

@@ -14,6 +14,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: cross-compile every released platform
+        # A release tag is a poor place to discover that the CLI does not
+        # build for Windows.
+        run: |
+          set -eu
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./cmd/buffet ./cmd/buffetd
+          done
+          for target in windows/amd64 windows/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./cmd/buffet
+          done
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@v7
         with:
