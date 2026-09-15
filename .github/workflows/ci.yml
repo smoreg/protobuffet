@@ -26,7 +26,7 @@ jobs:
             GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./cmd/buffet
           done
       - run: go vet ./...
-      - uses: golangci/golangci-lint-action@v7
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
