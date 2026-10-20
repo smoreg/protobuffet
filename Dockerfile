@@ -4,7 +4,7 @@
 # from the official image rather than being compiled here: building buf from
 # source needs more memory than a small CI runner has, and it is the same
 # static binary either way.
-FROM bufbuild/buf:1.72.0 AS buf
+FROM bufbuild/buf:1.74.0 AS buf
 
 FROM golang:1.26.8-alpine AS build
 ARG VERSION=dev
