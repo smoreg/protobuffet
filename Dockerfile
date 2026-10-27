@@ -6,7 +6,7 @@
 # static binary either way.
 FROM bufbuild/buf:1.72.0 AS buf
 
-FROM golang:1.26.8-alpine AS build
+FROM golang:1.27.3-alpine AS build
 ARG VERSION=dev
 WORKDIR /src
 
